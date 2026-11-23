@@ -1,0 +1,838 @@
+// =============================================
+// CareerOS — Prisma Schema
+// PostgreSQL + Full relationship graph
+// =============================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── ENUMS ─────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum ApplicationStatus {
+  SAVED
+  READY_TO_APPLY
+  APPLIED
+  SCREENING
+  INTERVIEW
+  TECHNICAL_ROUND
+  FINAL_ROUND
+  OFFER
+  REJECTED
+  WITHDRAWN
+}
+
+enum JobType {
+  FULL_TIME
+  PART_TIME
+  CONTRACT
+  INTERNSHIP
+  FREELANCE
+}
+
+enum WorkMode {
+  REMOTE
+  HYBRID
+  ONSITE
+}
+
+enum ExperienceLevel {
+  ENTRY
+  MID
+  SENIOR
+  LEAD
+  PRINCIPAL
+}
+
+enum SkillLevel {
+  BEGINNER
+  INTERMEDIATE
+  ADVANCED
+  EXPERT
+}
+
+enum SkillStatus {
+  KNOWN
+  LEARNING
+  PRACTICING
+  COMPLETED
+}
+
+enum InterviewType {
+  HR
+  TECHNICAL
+  SYSTEM_DESIGN
+  CODING
+  BEHAVIORAL
+  FINAL
+  OTHER
+}
+
+enum InterviewStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+  RESCHEDULED
+}
+
+enum NotificationType {
+  JOB_MATCH
+  APPLICATION_UPDATE
+  INTERVIEW_REMINDER
+  FOLLOW_UP_DUE
+  SYSTEM
+  AI_INSIGHT
+}
+
+enum AutomationTrigger {
+  JOB_SAVED
+  JOB_MATCHED
+  APPLICATION_CREATED
+  APPLICATION_STATUS_CHANGED
+  INTERVIEW_SCHEDULED
+  FOLLOW_UP_DUE
+  DAILY
+  WEEKLY
+}
+
+enum TaskType {
+  JOB_FETCH
+  JOB_MATCH
+  RESUME_PARSE
+  AI_ANALYSIS
+  EMAIL_SEND
+  NOTIFICATION
+  CLEANUP
+}
+
+enum TaskStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum StorageProvider {
+  LOCAL
+  S3
+  R2
+}
+
+// ── USER ──────────────────────────────────────────────────────────────────
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  passwordHash  String
+  name          String
+  role          UserRole @default(USER)
+  emailVerified Boolean  @default(false)
+  isActive      Boolean  @default(true)
+  isDemo        Boolean  @default(false)
+  /// Personal API key: only the SHA-256 hash is stored; prefix is shown masked in the UI
+  apiKeyHash    String?  @unique
+  apiKeyPrefix  String?
+  lastLoginAt   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Relations
+  profile              Profile?
+  resumes              Resume[]
+  jobs                 Job[]
+  applications         Application[]
+  savedJobs            SavedJob[]
+  jobSearches          JobSearch[]
+  interviews           Interview[]
+  coverLetters         CoverLetter[]
+  recruiterMessages    RecruiterMessage[]
+  notifications        Notification[]
+  agentTasks           AgentTask[]
+  automationRules      AutomationRule[]
+  aiConversations      AIConversation[]
+  aiUsage              AIUsage[]
+  preferences          UserPreference?
+  refreshTokens        RefreshToken[]
+  passwordResets       PasswordReset[]
+  auditLogs            AuditLog[]
+
+  @@index([email])
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
+  @@map("refresh_tokens")
+}
+
+model PasswordReset {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@map("password_resets")
+}
+
+// ── PROFILE ───────────────────────────────────────────────────────────────
+
+model Profile {
+  id             String   @id @default(cuid())
+  userId         String   @unique
+  headline       String?
+  summary        String?
+  phone          String?
+  location       String?
+  city           String?
+  state          String?
+  country        String   @default("India")
+  linkedinUrl    String?
+  githubUrl      String?
+  portfolioUrl   String?
+  websiteUrl     String?
+  currentRole    String?
+  currentCompany String?
+  yearsOfExp     Float    @default(0)
+  targetRoles    String[] @default([])
+  targetLocations String[] @default([])
+  remotePreference WorkMode @default(HYBRID)
+  salaryMin      Int      @default(0)
+  salaryMax      Int      @default(0)
+  salaryCurrency String   @default("INR")
+  noticePeriod   String?
+  availability   String?
+  completionPct  Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  skills         Skill[]
+  experiences    Experience[]
+  educations     Education[]
+  projects       Project[]
+
+  @@map("profiles")
+}
+
+model Skill {
+  id          String      @id @default(cuid())
+  profileId   String
+  name        String
+  level       SkillLevel  @default(INTERMEDIATE)
+  status      SkillStatus @default(KNOWN)
+  yearsOfExp  Float       @default(0)
+  isPrimary   Boolean     @default(false)
+  category    String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  profile     Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@unique([profileId, name])
+  @@index([profileId])
+  @@map("skills")
+}
+
+model Experience {
+  id           String    @id @default(cuid())
+  profileId    String
+  title        String
+  company      String
+  location     String?
+  startDate    DateTime
+  endDate      DateTime?
+  current      Boolean   @default(false)
+  description  String?
+  technologies String[]  @default([])
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  profile      Profile   @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([profileId])
+  @@map("experiences")
+}
+
+model Education {
+  id          String    @id @default(cuid())
+  profileId   String
+  degree      String
+  field       String
+  institution String
+  location    String?
+  startDate   DateTime
+  endDate     DateTime?
+  grade       String?
+  description String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  profile     Profile   @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([profileId])
+  @@map("educations")
+}
+
+model Project {
+  id          String   @id @default(cuid())
+  profileId   String
+  name        String
+  description String?
+  url         String?
+  repoUrl     String?
+  technologies String[] @default([])
+  startDate   DateTime?
+  endDate     DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  profile     Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([profileId])
+  @@map("projects")
+}
+
+// ── RESUME ────────────────────────────────────────────────────────────────
+
+model Resume {
+  id              String          @id @default(cuid())
+  userId          String
+  name            String
+  description     String?
+  isDefault       Boolean         @default(false)
+  fileUrl         String?
+  fileName        String?
+  fileSize        Int?
+  fileMimeType    String?
+  storageProvider StorageProvider @default(LOCAL)
+  storageKey      String?
+  parsedData      Json?
+  atsScore        Int?
+  keywords        String[]        @default([])
+  extractedSkills String[]        @default([])
+  aiAnalysis      Json?
+  version         Int             @default(1)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  versions        ResumeVersion[]
+  applications    Application[]
+  coverLetters    CoverLetter[]
+  jobMatches      JobMatch[]
+
+  @@index([userId])
+  @@map("resumes")
+}
+
+model ResumeVersion {
+  id        String   @id @default(cuid())
+  resumeId  String
+  version   Int
+  fileUrl   String?
+  storageKey String?
+  changes   String?
+  createdAt DateTime @default(now())
+
+  resume    Resume   @relation(fields: [resumeId], references: [id], onDelete: Cascade)
+
+  @@index([resumeId])
+  @@map("resume_versions")
+}
+
+// ── COMPANY ───────────────────────────────────────────────────────────────
+
+model Company {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  domain      String?
+  logo        String?
+  website     String?
+  linkedin    String?
+  industry    String?
+  size        String?
+  hq          String?
+  description String?
+  techStack   String[] @default([])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  jobs        Job[]
+
+  @@index([name])
+  @@map("companies")
+}
+
+// ── JOB ───────────────────────────────────────────────────────────────────
+
+model JobSource {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  type        String
+  baseUrl     String?
+  isActive    Boolean  @default(true)
+  config      Json?
+  lastFetchAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  jobs        Job[]
+
+  @@map("job_sources")
+}
+
+model Job {
+  id               String          @id @default(cuid())
+  userId           String
+  sourceId         String?
+  companyId        String?
+  externalId       String?
+  title            String
+  companyName      String
+  location         String?
+  city             String?
+  state            String?
+  country          String          @default("India")
+  workMode         WorkMode        @default(HYBRID)
+  jobType          JobType         @default(FULL_TIME)
+  experienceMin    Float?
+  experienceMax    Float?
+  experienceLevel  ExperienceLevel?
+  salaryMin        Int?
+  salaryMax        Int?
+  salaryCurrency   String          @default("INR")
+  description      String?
+  requirements     String?
+  skills           String[]        @default([])
+  benefits         String[]        @default([])
+  applyUrl         String?
+  sourceUrl        String?
+  postedAt         DateTime?
+  expiresAt        DateTime?
+  isActive         Boolean         @default(true)
+  isDemo           Boolean         @default(false)
+  fetchedAt        DateTime        @default(now())
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  user             User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  source           JobSource?      @relation(fields: [sourceId], references: [id])
+  company          Company?        @relation(fields: [companyId], references: [id])
+  matches          JobMatch[]
+  applications     Application[]
+  savedJobs        SavedJob[]
+  coverLetters     CoverLetter[]
+  interviews       Interview[]
+
+  @@unique([userId, externalId, sourceId])
+  @@index([userId])
+  @@index([companyName])
+  @@index([postedAt])
+  @@map("jobs")
+}
+
+model JobMatch {
+  id               String   @id @default(cuid())
+  jobId            String
+  resumeId         String?
+  userId           String
+  overallScore     Float    @default(0)
+  skillScore       Float    @default(0)
+  experienceScore  Float    @default(0)
+  locationScore    Float    @default(0)
+  salaryScore      Float    @default(0)
+  matchedSkills    String[] @default([])
+  missingSkills    String[] @default([])
+  analysis         String?
+  aiExplanation    Json?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  job              Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  resume           Resume?  @relation(fields: [resumeId], references: [id])
+
+  @@unique([jobId, userId])
+  @@index([userId])
+  @@index([overallScore])
+  @@map("job_matches")
+}
+
+// ── APPLICATION ───────────────────────────────────────────────────────────
+
+model Application {
+  id              String            @id @default(cuid())
+  userId          String
+  jobId           String
+  resumeId        String?
+  status          ApplicationStatus @default(SAVED)
+  appliedAt       DateTime?
+  followUpAt      DateTime?
+  notes           String?
+  coverLetterText String?
+  salaryExpected  Int?
+  referral        String?
+  source          String?
+  rejectionReason String?
+  offerDetails    Json?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  user            User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  job             Job                        @relation(fields: [jobId], references: [id])
+  resume          Resume?                    @relation(fields: [resumeId], references: [id])
+  statusHistory   ApplicationStatusHistory[]
+  interviews      Interview[]
+  coverLetters    CoverLetter[]
+  noteEntries     ApplicationNote[]
+
+  @@unique([userId, jobId])
+  @@index([userId])
+  @@index([status])
+  @@index([appliedAt])
+  @@map("applications")
+}
+
+/// Timestamped notes on an application (the legacy `notes` string column is kept for the agent/old data)
+model ApplicationNote {
+  id            String   @id @default(cuid())
+  applicationId String
+  userId        String
+  content       String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId])
+  @@map("application_notes")
+}
+
+model ApplicationStatusHistory {
+  id            String            @id @default(cuid())
+  applicationId String
+  fromStatus    ApplicationStatus?
+  toStatus      ApplicationStatus
+  notes         String?
+  changedAt     DateTime          @default(now())
+
+  application   Application       @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId])
+  @@map("application_status_history")
+}
+
+// ── INTERVIEW ─────────────────────────────────────────────────────────────
+
+model Interview {
+  id              String          @id @default(cuid())
+  userId          String
+  applicationId   String?
+  jobId           String?
+  type            InterviewType   @default(TECHNICAL)
+  status          InterviewStatus @default(SCHEDULED)
+  scheduledAt     DateTime?
+  completedAt     DateTime?
+  durationMinutes Int?
+  location        String?
+  meetingUrl      String?
+  interviewer     String?
+  notes           String?
+  feedback        String?
+  rating          Int?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  application     Application?      @relation(fields: [applicationId], references: [id])
+  job             Job?              @relation(fields: [jobId], references: [id])
+  questions       InterviewQuestion[]
+  sessions        InterviewSession[]
+
+  @@index([userId])
+  @@index([scheduledAt])
+  @@map("interviews")
+}
+
+model InterviewQuestion {
+  id          String    @id @default(cuid())
+  interviewId String
+  question    String
+  answer      String?
+  category    String?
+  difficulty  String?
+  aiGenerated Boolean   @default(false)
+  userAnswer  String?
+  aiFeedback  Json?
+  score       Int?
+  createdAt   DateTime  @default(now())
+
+  interview   Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+
+  @@index([interviewId])
+  @@map("interview_questions")
+}
+
+model InterviewSession {
+  id          String    @id @default(cuid())
+  interviewId String
+  startedAt   DateTime  @default(now())
+  endedAt     DateTime?
+  transcript  Json?
+  aiFeedback  Json?
+  overallScore Int?
+
+  interview   Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+
+  @@index([interviewId])
+  @@map("interview_sessions")
+}
+
+// ── COVER LETTER & RECRUITER ──────────────────────────────────────────────
+
+model CoverLetter {
+  id             String   @id @default(cuid())
+  userId         String
+  jobId          String?
+  resumeId       String?
+  applicationId  String?
+  title          String
+  content        String
+  tone           String   @default("professional")
+  length         String   @default("standard")
+  aiGenerated    Boolean  @default(false)
+  version        Int      @default(1)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  job            Job?         @relation(fields: [jobId], references: [id])
+  resume         Resume?      @relation(fields: [resumeId], references: [id])
+  application    Application? @relation(fields: [applicationId], references: [id])
+
+  @@index([userId])
+  @@map("cover_letters")
+}
+
+model RecruiterMessage {
+  id          String   @id @default(cuid())
+  userId      String
+  type        String   @default("linkedin")
+  company     String?
+  role        String?
+  recipientName String?
+  subject     String?
+  content     String
+  aiGenerated Boolean  @default(true)
+  sentAt      DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("recruiter_messages")
+}
+
+// ── SAVED JOB & SEARCH ────────────────────────────────────────────────────
+
+model SavedJob {
+  id        String   @id @default(cuid())
+  userId    String
+  jobId     String
+  notes     String?
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  job       Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, jobId])
+  @@index([userId])
+  @@map("saved_jobs")
+}
+
+model JobSearch {
+  id          String   @id @default(cuid())
+  userId      String
+  query       String
+  filters     Json?
+  resultCount Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("job_searches")
+}
+
+// ── NOTIFICATIONS ─────────────────────────────────────────────────────────
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  type      NotificationType
+  title     String
+  body      String
+  data      Json?
+  read      Boolean          @default(false)
+  readAt    DateTime?
+  emailSent Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, read])
+  @@index([createdAt])
+  @@map("notifications")
+}
+
+// ── AUTOMATION ────────────────────────────────────────────────────────────
+
+model AutomationRule {
+  id          String            @id @default(cuid())
+  userId      String
+  name        String
+  description String?
+  trigger     AutomationTrigger
+  conditions  Json
+  actions     Json
+  enabled     Boolean           @default(true)
+  runCount    Int               @default(0)
+  lastRunAt   DateTime?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("automation_rules")
+}
+
+// ── AI ────────────────────────────────────────────────────────────────────
+
+model AIConversation {
+  id        String    @id @default(cuid())
+  userId    String
+  title     String?
+  model     String?
+  messages  Json      @default("[]")
+  tokenUsed Int       @default(0)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("ai_conversations")
+}
+
+model AIUsage {
+  id          String   @id @default(cuid())
+  userId      String
+  feature     String
+  model       String
+  inputTokens Int      @default(0)
+  outputTokens Int     @default(0)
+  totalTokens Int      @default(0)
+  cost        Float    @default(0)
+  createdAt   DateTime @default(now())
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([feature])
+  @@index([createdAt])
+  @@map("ai_usage")
+}
+
+// ── AGENT TASKS ───────────────────────────────────────────────────────────
+
+model AgentTask {
+  id          String     @id @default(cuid())
+  userId      String
+  type        TaskType
+  status      TaskStatus @default(PENDING)
+  input       Json?
+  output      Json?
+  error       String?
+  progress    Int        @default(0)
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@map("agent_tasks")
+}
+
+// ── USER PREFERENCES ──────────────────────────────────────────────────────
+
+model UserPreference {
+  id                     String   @id @default(cuid())
+  userId                 String   @unique
+  emailJobAlerts         Boolean  @default(true)
+  emailApplicationUpdates Boolean @default(true)
+  emailInterviewReminders Boolean @default(true)
+  emailWeeklySummary     Boolean  @default(false)
+  inAppJobAlerts         Boolean  @default(true)
+  inAppApplicationUpdates Boolean @default(true)
+  jobAlertMinMatchScore  Int      @default(70)
+  theme                  String   @default("dark")
+  language               String   @default("en")
+  timezone               String   @default("Asia/Kolkata")
+  aiProvider             String?
+  /// Free-form app settings: onboarding state, job sources, AI prefs, integrations, avatar
+  extras                 Json     @default("{}")
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  user                   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_preferences")
+}
+
+// ── AUDIT LOG ─────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String
+  action    String
+  resource  String?
+  resourceId String?
+  details   Json?
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}

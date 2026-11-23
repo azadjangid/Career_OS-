@@ -1,0 +1,101 @@
+version: '3.9'
+
+services:
+  # ── PostgreSQL ────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: careeros_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: careeros_dev
+      POSTGRES_USER: careeros
+      POSTGRES_PASSWORD: password
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./prisma/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U careeros -d careeros_dev']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis ─────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: careeros_redis
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Backend API ────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: careeros_api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://careeros:password@postgres:5432/careeros_dev
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: development
+    ports:
+      - '3001:3001'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./uploads:/app/uploads
+      - ./apps/api/src:/app/apps/api/src
+    command: npm run dev --workspace=apps/api
+
+  # ── Workers ───────────────────────────────────────────────────────────────
+  workers:
+    build:
+      context: .
+      dockerfile: workers/Dockerfile
+    container_name: careeros_workers
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://careeros:password@postgres:5432/careeros_dev
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: development
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./workers/src:/app/workers/src
+
+  # ── Frontend (dev) ─────────────────────────────────────────────────────────
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: careeros_web
+    restart: unless-stopped
+    environment:
+      VITE_API_URL: http://localhost:3001/api
+    ports:
+      - '5173:5173'
+    depends_on:
+      - api
+    volumes:
+      - ./apps/web/src:/app/apps/web/src
+
+volumes:
+  postgres_data:
+  redis_data:

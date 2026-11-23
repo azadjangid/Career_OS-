@@ -1,0 +1,2500 @@
+"use client";
+
+import { useEffect, useState, useMemo } from "react";
+import { format } from "date-fns";
+import {
+  Receipt,
+  Plus,
+  Search,
+  Eye,
+  Download,
+  Pencil,
+  Trash2,
+  X,
+  CheckCircle2,
+  XCircle,
+  AlertCircle,
+  RefreshCw,
+  ChevronLeft,
+  ChevronRight,
+  Check,
+  CreditCard,
+  ShieldAlert,
+  UserCheck,
+  Clock,
+  History,
+} from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Textarea } from "@/components/ui/textarea";
+import { useAuth } from "@/contexts/auth-store";
+import { useToast } from "@/components/ui/use-toast";
+import { api } from "@/services/api-client";
+import {
+  reimbursementService,
+  ReimbursementItem,
+  ReimbursementQueryParams,
+  ExpenseFor,
+  ExpenseStatus,
+  DEFAULT_EXPENSE_HEADS,
+} from "@/services/reimbursement";
+
+interface EmployeeOption {
+  id: string;
+  employeeId: string;
+  fullName: string;
+  department: string;
+}
+
+interface WorkspaceOption {
+  id: string;
+  clientName: string;
+  companyName: string;
+}
+
+// Shape of the per-field validation errors shown in the Add/Edit form
+interface ReimbursementFormErrors {
+  employeeId?: string;
+  expenseDate?: string;
+  expenseHead?: string;
+  clientName?: string;
+  departmentName?: string;
+  amount?: string;
+  attachment?: string;
+}
+
+// Shared pagination footer used by all three tabs
+function PaginationControls({
+  page,
+  totalPages,
+  totalRecords,
+  setPage,
+}: {
+  page: number;
+  totalPages: number;
+  totalRecords: number;
+  setPage: (fn: (p: number) => number) => void;
+}) {
+  if (totalPages <= 1) return null;
+  return (
+    <div className="flex items-center justify-between px-4 py-3 border-t bg-muted/20 text-xs">
+      <span className="text-muted-foreground">
+        Page {page} of {totalPages} ({totalRecords} total records)
+      </span>
+      <div className="flex items-center gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 px-2"
+          disabled={page <= 1}
+          onClick={() => setPage((p) => Math.max(1, p - 1))}
+        >
+          <ChevronLeft className="h-3.5 w-3.5 mr-1" /> Previous
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 px-2"
+          disabled={page >= totalPages}
+          onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+        >
+          Next <ChevronRight className="h-3.5 w-3.5 ml-1" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+export default function EmployeeReimbursementPage() {
+  const { user } = useAuth();
+  const { toast } = useToast();
+
+  // Strict Admin check: Role 1 only
+  const isAdmin = user?.role === 1 || user?.roleName?.toLowerCase() === "admin";
+  const isAdminOrManager =
+    isAdmin || user?.role === 5 || user?.roleName?.toLowerCase() === "manager";
+  const isManagerOrAdmin = isAdminOrManager;
+
+  // Active Tab
+  const [activeTab, setActiveTab] = useState<"my" | "manager" | "admin">("my");
+
+  // Submissions State (My Reimbursements)
+  const [myReimbursements, setMyReimbursements] = useState<ReimbursementItem[]>([]);
+  const [isLoadingMy, setIsLoadingMy] = useState<boolean>(true);
+
+  // Manager Queue State
+  const [managerQueue, setManagerQueue] = useState<ReimbursementItem[]>([]);
+  const [isLoadingManager, setIsLoadingManager] = useState<boolean>(false);
+  const [managerFilterStatus, setManagerFilterStatus] = useState<string>("PENDING_MANAGER");
+
+  // Admin Queue State (Admin role 1 only)
+  const [adminQueue, setAdminQueue] = useState<ReimbursementItem[]>([]);
+  const [isLoadingAdmin, setIsLoadingAdmin] = useState<boolean>(false);
+  const [adminFilterStatus, setAdminFilterStatus] = useState<string>("PENDING_ADMIN");
+
+  // Pagination & Filtering
+  const [page, setPage] = useState<number>(1);
+  const [limit] = useState<number>(10);
+  const [totalPages, setTotalPages] = useState<number>(1);
+  const [totalRecords, setTotalRecords] = useState<number>(0);
+
+  const [search, setSearch] = useState<string>("");
+  const [selectedEmployee, setSelectedEmployee] = useState<string>("all");
+  const [selectedClient, setSelectedClient] = useState<string>("all");
+  const [selectedExpenseHead, setSelectedExpenseHead] = useState<string>("all");
+  const [selectedExpenseFor, setSelectedExpenseFor] = useState<string>("all");
+  const [selectedBillable, setSelectedBillable] = useState<string>("all");
+  const [selectedPaymentStatus, setSelectedPaymentStatus] = useState<string>("all");
+  const [selectedApprovalStatus, setSelectedApprovalStatus] = useState<string>("all");
+
+  // Options State
+  const [expenseHeads, setExpenseHeads] = useState<string[]>(DEFAULT_EXPENSE_HEADS);
+  const [employees, setEmployees] = useState<EmployeeOption[]>([]);
+  const [workspaces, setWorkspaces] = useState<WorkspaceOption[]>([]);
+
+  // Modal States
+  const [isAddModalOpen, setIsAddModalOpen] = useState<boolean>(false);
+  const [editingItem, setEditingItem] = useState<ReimbursementItem | null>(null);
+  const [isDeleting, setIsDeleting] = useState<boolean>(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState<boolean>(false);
+
+  // Manager Action Modal
+  const [managerActionItem, setManagerActionItem] = useState<{
+    item: ReimbursementItem;
+    action: "approve" | "reject";
+  } | null>(null);
+  const [managerActionRemarks, setManagerActionRemarks] = useState<string>("");
+  const [isSubmittingManagerAction, setIsSubmittingManagerAction] = useState<boolean>(false);
+
+  // Admin Action Modal (Role 1 only)
+  const [adminActionItem, setAdminActionItem] = useState<{
+    item: ReimbursementItem;
+    action: "approve" | "reject";
+  } | null>(null);
+  const [adminActionRemarks, setAdminActionRemarks] = useState<string>("");
+  const [isSubmittingAdminAction, setIsSubmittingAdminAction] = useState<boolean>(false);
+
+  // Details / History Modal
+  const [selectedHistoryItem, setSelectedHistoryItem] = useState<ReimbursementItem | null>(null);
+
+  // Mark as Paid Modal (Admin only)
+  const [markingPaidItem, setMarkingPaidItem] = useState<ReimbursementItem | null>(null);
+  const [isMarkingPaid, setIsMarkingPaid] = useState<boolean>(false);
+
+  // Attachment Viewer State
+  const [viewingAttachment, setViewingAttachment] = useState<{
+    id: string;
+    name: string;
+    mimeType?: string;
+    blobUrl?: string;
+    isLoading: boolean;
+    error?: string | null;
+  } | null>(null);
+
+  // Form State
+  const [formEmployeeId, setFormEmployeeId] = useState<string>("");
+  const [formExpenseHead, setFormExpenseHead] = useState<string>("");
+  const [formExpenseFor, setFormExpenseFor] = useState<ExpenseFor>("CLIENT");
+  const [formExpenseDate, setFormExpenseDate] = useState<string>(
+    format(new Date(), "yyyy-MM-dd")
+  );
+  const [formClientId, setFormClientId] = useState<string>("");
+  const [formClientName, setFormClientName] = useState<string>("");
+  const [formDepartmentName, setFormDepartmentName] = useState<string>("");
+  const [formBillable, setFormBillable] = useState<boolean>(true);
+  const [formAmount, setFormAmount] = useState<string>("");
+  const [formNotes, setFormNotes] = useState<string>("");
+  const [formFile, setFormFile] = useState<File | null>(null);
+  const [formFileError, setFormFileError] = useState<string | null>(null);
+
+  // Form Validation State (Add/Edit dialog only)
+  const [formErrors, setFormErrors] = useState<ReimbursementFormErrors>({});
+
+  // Load dropdown options on mount
+  useEffect(() => {
+    async function loadOptions() {
+      try {
+        const heads = await reimbursementService.getExpenseHeads();
+        if (Array.isArray(heads) && heads.length > 0) {
+          setExpenseHeads(heads);
+        }
+      } catch (err) {
+        console.error("Failed to load expense heads", err);
+      }
+
+      if (isManagerOrAdmin) {
+        try {
+          const empRes = await api.get<any>("/employees");
+          const list = Array.isArray(empRes) ? empRes : empRes?.data ?? [];
+          if (Array.isArray(list)) {
+            setEmployees(
+              list.map((e: any) => ({
+                id: e.id,
+                employeeId: e.employeeId || e.id,
+                fullName:
+                  e.fullName ||
+                  e.name ||
+                  `${e.firstName || ""} ${e.lastName || ""}`.trim() ||
+                  "Employee",
+                department: e.department || "General",
+              }))
+            );
+          }
+        } catch (err) {
+          console.error("Failed to load employees", err);
+        }
+      }
+
+      try {
+        const wsRes = await api.get<any[]>("/workspaces");
+        if (Array.isArray(wsRes)) {
+          setWorkspaces(
+            wsRes.map((w: any) => ({
+              id: w.id,
+              clientName: w.clientName || w.companyName,
+              companyName: w.companyName || w.clientName,
+            }))
+          );
+        }
+      } catch (err) {
+        console.error("Failed to load workspaces", err);
+      }
+    }
+    loadOptions();
+  }, [isManagerOrAdmin]);
+
+  // Fetch My Submissions
+  const fetchMyReimbursements = async () => {
+    setIsLoadingMy(true);
+    try {
+      const queryParams: ReimbursementQueryParams = {
+        page: activeTab === "my" ? page : 1,
+        limit,
+        search: search.trim() || undefined,
+        clientId: selectedClient !== "all" ? selectedClient : undefined,
+        expenseHead: selectedExpenseHead !== "all" ? selectedExpenseHead : undefined,
+        expenseFor: selectedExpenseFor !== "all" ? selectedExpenseFor : undefined,
+        status: selectedApprovalStatus !== "all" ? selectedApprovalStatus : undefined,
+        billable: selectedBillable !== "all" ? selectedBillable : undefined,
+        paymentStatus: selectedPaymentStatus !== "all" ? selectedPaymentStatus : undefined,
+      };
+      const data = await reimbursementService.getMyReimbursements(queryParams);
+      setMyReimbursements(data.reimbursements || []);
+      if (activeTab === "my") {
+        setTotalPages(data.pagination?.pages || 1);
+        setTotalRecords(data.pagination?.total || 0);
+      }
+    } catch (err) {
+      console.error("Failed to fetch my reimbursements", err);
+    } finally {
+      setIsLoadingMy(false);
+    }
+  };
+
+  // Fetch Manager Queue
+  const fetchManagerQueue = async () => {
+    setIsLoadingManager(true);
+    try {
+      const queryParams: ReimbursementQueryParams = {
+        page: activeTab === "manager" ? page : 1,
+        limit,
+        search: search.trim() || undefined,
+        status: managerFilterStatus !== "all" ? managerFilterStatus : undefined,
+        expenseHead: selectedExpenseHead !== "all" ? selectedExpenseHead : undefined,
+        expenseFor: selectedExpenseFor !== "all" ? selectedExpenseFor : undefined,
+      };
+      const data = await reimbursementService.getManagerQueue(queryParams);
+      setManagerQueue(data.reimbursements || []);
+      if (activeTab === "manager") {
+        setTotalPages(data.pagination?.pages || 1);
+        setTotalRecords(data.pagination?.total || 0);
+      }
+    } catch (err) {
+      console.error("Failed to fetch manager queue", err);
+    } finally {
+      setIsLoadingManager(false);
+    }
+  };
+
+  // Fetch Admin Queue (strictly role 1 only)
+  const fetchAdminQueue = async () => {
+    if (!isAdmin) return;
+    setIsLoadingAdmin(true);
+    try {
+      const queryParams: ReimbursementQueryParams = {
+        page: activeTab === "admin" ? page : 1,
+        limit,
+        search: search.trim() || undefined,
+        status: adminFilterStatus !== "all" ? adminFilterStatus : undefined,
+        employeeId: selectedEmployee !== "all" ? selectedEmployee : undefined,
+        clientId: selectedClient !== "all" ? selectedClient : undefined,
+        expenseHead: selectedExpenseHead !== "all" ? selectedExpenseHead : undefined,
+        expenseFor: selectedExpenseFor !== "all" ? selectedExpenseFor : undefined,
+        paymentStatus: selectedPaymentStatus !== "all" ? selectedPaymentStatus : undefined,
+      };
+      const data = await reimbursementService.getAdminQueue(queryParams);
+      setAdminQueue(data.reimbursements || []);
+      if (activeTab === "admin") {
+        setTotalPages(data.pagination?.pages || 1);
+        setTotalRecords(data.pagination?.total || 0);
+      }
+    } catch (err) {
+      console.error("Failed to fetch admin queue", err);
+    } finally {
+      setIsLoadingAdmin(false);
+    }
+  };
+
+  // Reload current tab data
+  useEffect(() => {
+    if (activeTab === "my") {
+      fetchMyReimbursements();
+    } else if (activeTab === "manager") {
+      fetchManagerQueue();
+    } else if (activeTab === "admin" && isAdmin) {
+      fetchAdminQueue();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    activeTab,
+    page,
+    limit,
+    search,
+    selectedEmployee,
+    selectedClient,
+    selectedExpenseHead,
+    selectedExpenseFor,
+    selectedBillable,
+    selectedPaymentStatus,
+    selectedApprovalStatus,
+    managerFilterStatus,
+    adminFilterStatus,
+    isAdmin,
+  ]);
+
+  // Initial check for manager queue items
+  useEffect(() => {
+    fetchManagerQueue();
+    if (isAdmin) {
+      fetchAdminQueue();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin]);
+
+  const isUserAManager = managerQueue.length > 0 || isManagerOrAdmin;
+
+  // Reset Filters
+  const handleResetFilters = () => {
+    setSearch("");
+    setSelectedEmployee("all");
+    setSelectedClient("all");
+    setSelectedExpenseHead("all");
+    setSelectedExpenseFor("all");
+    setSelectedBillable("all");
+    setSelectedPaymentStatus("all");
+    setSelectedApprovalStatus("all");
+    setPage(1);
+  };
+
+  // Open Add Modal
+  const handleOpenAddModal = () => {
+    setEditingItem(null);
+    setFormEmployeeId("");
+    setFormExpenseHead(expenseHeads[0] || DEFAULT_EXPENSE_HEADS[0] || "Travel");
+    setFormExpenseFor("CLIENT");
+    setFormExpenseDate(format(new Date(), "yyyy-MM-dd"));
+    setFormClientId("");
+    setFormClientName("");
+    setFormDepartmentName("");
+    setFormBillable(true);
+    setFormAmount("");
+    setFormNotes("");
+    setFormFile(null);
+    setFormFileError(null);
+    setFormErrors({});
+    setIsAddModalOpen(true);
+  };
+
+  // Open Edit Modal
+  const handleOpenEditModal = (item: ReimbursementItem) => {
+    setEditingItem(item);
+    setFormEmployeeId(item.employeeId || "");
+    setFormExpenseHead(item.expenseHead || DEFAULT_EXPENSE_HEADS[0] || "Travel");
+    setFormExpenseFor(item.expenseFor || "CLIENT");
+    setFormExpenseDate(
+      item.expenseDate
+        ? format(new Date(item.expenseDate), "yyyy-MM-dd")
+        : format(new Date(item.createdAt), "yyyy-MM-dd")
+    );
+    setFormClientId(item.clientId || "");
+    setFormClientName(item.clientName || "");
+    setFormDepartmentName(item.departmentName || "");
+    setFormBillable(item.expenseFor === "INTERNAL_OFFICE" ? false : item.billable);
+    setFormAmount(String(item.amount));
+    setFormNotes(item.notes || "");
+    setFormFile(null);
+    setFormFileError(null);
+    setFormErrors({});
+    setIsAddModalOpen(true);
+  };
+
+  // Open Attachment Viewer
+  const handleViewAttachment = async (item: ReimbursementItem) => {
+    const filename = item.attachmentOriginalName || "Receipt.pdf";
+    setViewingAttachment({
+      id: item.id,
+      name: filename,
+      mimeType: item.attachmentMimeType || undefined,
+      blobUrl: undefined,
+      isLoading: true,
+      error: null,
+    });
+
+    try {
+      const { mimeType, url } = await reimbursementService.fetchAttachmentBlob(item.id);
+      setViewingAttachment({
+        id: item.id,
+        name: filename,
+        mimeType: mimeType || item.attachmentMimeType || undefined,
+        blobUrl: url,
+        isLoading: false,
+        error: null,
+      });
+    } catch (err: any) {
+      console.error("Failed to load receipt attachment blob", err);
+      setViewingAttachment((prev) =>
+        prev
+          ? {
+              ...prev,
+              isLoading: false,
+              error: err?.message || "Failed to load receipt attachment preview.",
+            }
+          : null
+      );
+    }
+  };
+
+  const handleCloseAttachment = () => {
+    if (viewingAttachment?.blobUrl) {
+      URL.revokeObjectURL(viewingAttachment.blobUrl);
+    }
+    setViewingAttachment(null);
+  };
+
+  const handleDownloadAttachment = async (item: ReimbursementItem) => {
+    try {
+      await reimbursementService.downloadAttachment(
+        item.id,
+        item.attachmentOriginalName || "receipt.pdf"
+      );
+      toast({
+        title: "Download Started",
+        description: `Downloading ${item.attachmentOriginalName || "receipt"}...`,
+      });
+    } catch (err: any) {
+      toast({
+        title: "Download Error",
+        description: err?.message || "Failed to download receipt attachment.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // File Upload Selection Handler
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setFormFileError(null);
+    setFormErrors((prev) => ({ ...prev, attachment: undefined }));
+    const selectedFile = e.target.files?.[0];
+    if (!selectedFile) {
+      setFormFile(null);
+      return;
+    }
+
+    // Some browsers/OSes report odd MIME types for the same extension, so
+    // accept either a known MIME type or a known extension.
+    const allowedMimeTypes = ["application/pdf", "image/jpeg", "image/png", "image/jpg"];
+    const allowedExtensions = [".pdf", ".jpg", ".jpeg", ".png"];
+    const fileNameLower = selectedFile.name.toLowerCase();
+    const hasAllowedExtension = allowedExtensions.some((ext) => fileNameLower.endsWith(ext));
+    const hasAllowedMimeType = allowedMimeTypes.includes(selectedFile.type);
+
+    if (!hasAllowedMimeType && !hasAllowedExtension) {
+      setFormFileError("Allowed file formats: PDF, JPG, JPEG, PNG");
+      setFormFile(null);
+      return;
+    }
+
+    if (selectedFile.size > 5 * 1024 * 1024) {
+      setFormFileError(
+        `File size exceeds 5MB limit (selected file is ${(selectedFile.size / (1024 * 1024)).toFixed(2)}MB)`
+      );
+      setFormFile(null);
+      return;
+    }
+
+    setFormFile(selectedFile);
+  };
+
+  // Validate the Add/Edit form. Returns the error object (empty when valid).
+  const validateReimbursementForm = (): ReimbursementFormErrors => {
+    const errors: ReimbursementFormErrors = {};
+
+    if (isAdminOrManager && employees.length > 0 && !formEmployeeId) {
+      errors.employeeId = "Please select an employee";
+    }
+
+    if (!formExpenseDate) {
+      errors.expenseDate = "Expense date is required";
+    } else {
+      const selectedDate = new Date(formExpenseDate);
+      const today = new Date();
+      today.setHours(23, 59, 59, 999);
+      if (isNaN(selectedDate.getTime())) {
+        errors.expenseDate = "Enter a valid date";
+      } else if (selectedDate > today) {
+        errors.expenseDate = "Expense date cannot be in the future";
+      }
+    }
+
+    if (!formExpenseHead) {
+      errors.expenseHead = "Expense head is required";
+    }
+
+    if (formExpenseFor === "CLIENT") {
+      if (!formClientId && !formClientName.trim()) {
+        errors.clientName = "Client name is required";
+      }
+    } else if (formExpenseFor === "INTERNAL_OFFICE") {
+      if (!formDepartmentName.trim()) {
+        errors.departmentName = "Department name is required";
+      }
+    }
+
+    const numAmount = parseFloat(formAmount);
+    if (!formAmount.trim()) {
+      errors.amount = "Amount is required";
+    } else if (isNaN(numAmount) || numAmount <= 0) {
+      errors.amount = "Amount must be a numeric value greater than 0";
+    }
+
+    if (!editingItem && !formFile) {
+      errors.attachment = "Attachment (bill/receipt) is required for new reimbursements";
+    }
+
+    if (Object.keys(errors).length > 0) {
+      console.warn("Reimbursement form validation failed:", errors);
+    }
+
+    setFormErrors(errors);
+    return errors;
+  };
+
+  // Submit Form (Create / Update)
+  const handleSubmitForm = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    const errors = validateReimbursementForm();
+    const errorMessages = Object.values(errors).filter(Boolean);
+    if (errorMessages.length > 0) {
+      toast({
+        title: "Validation Error",
+        description: errorMessages.join(" • "),
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const numAmount = parseFloat(formAmount);
+
+    setIsSaving(true);
+
+    try {
+      const formData = new FormData();
+      if (isManagerOrAdmin && formEmployeeId) {
+        formData.append("employeeId", formEmployeeId);
+      }
+      formData.append("expenseHead", formExpenseHead);
+      formData.append("expenseFor", formExpenseFor);
+      if (formExpenseDate) {
+        formData.append("expenseDate", formExpenseDate);
+      }
+
+      if (formExpenseFor === "CLIENT") {
+        if (formClientId) formData.append("clientId", formClientId);
+        if (formClientName) formData.append("clientName", formClientName);
+      } else {
+        formData.append("departmentName", formDepartmentName);
+      }
+
+      const isBillable = formExpenseFor === "CLIENT" ? formBillable : false;
+      formData.append("billable", String(isBillable));
+      formData.append("amount", String(numAmount));
+      if (formNotes) formData.append("notes", formNotes);
+      if (formFile) formData.append("attachment", formFile);
+
+      if (editingItem) {
+        await reimbursementService.updateReimbursement(editingItem.id, formData);
+        toast({
+          title: "Reimbursement Updated",
+          description: "Your reimbursement record has been successfully updated.",
+        });
+      } else {
+        await reimbursementService.createReimbursement(formData);
+        toast({
+          title: "Reimbursement Submitted",
+          description:
+            "Your reimbursement has been submitted and sent to your Manager for first-level approval.",
+        });
+      }
+
+      setIsAddModalOpen(false);
+      fetchMyReimbursements();
+      if (isAdmin) fetchAdminQueue();
+      fetchManagerQueue();
+    } catch (err: any) {
+      console.error("Save error", err);
+      toast({
+        title: "Error",
+        description: err.message || "Failed to save reimbursement record",
+        variant: "destructive",
+      });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // Delete Reimbursement
+  const handleDelete = async () => {
+    if (!deletingId) return;
+    setIsDeleting(true);
+    try {
+      await reimbursementService.deleteReimbursement(deletingId);
+      toast({
+        title: "Deleted",
+        description: "Reimbursement request deleted successfully.",
+      });
+      setDeletingId(null);
+      fetchMyReimbursements();
+    } catch (err: any) {
+      toast({
+        title: "Delete Failed",
+        description: err?.message || "Failed to delete reimbursement request.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  // Submit Manager Action (Approve / Reject)
+  const handleManagerActionSubmit = async () => {
+    if (!managerActionItem) return;
+    setIsSubmittingManagerAction(true);
+    try {
+      await reimbursementService.managerAction(
+        managerActionItem.item.id,
+        managerActionItem.action,
+        managerActionRemarks.trim() || undefined
+      );
+      toast({
+        title:
+          managerActionItem.action === "approve"
+            ? "Reimbursement Approved"
+            : "Reimbursement Rejected",
+        description:
+          managerActionItem.action === "approve"
+            ? "Reimbursement has been approved and forwarded to Admin for final review."
+            : "Reimbursement has been rejected.",
+      });
+      setManagerActionItem(null);
+      setManagerActionRemarks("");
+      fetchManagerQueue();
+      if (isAdmin) fetchAdminQueue();
+    } catch (err: any) {
+      toast({
+        title: "Action Failed",
+        description: err?.message || "Failed to process manager action.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsSubmittingManagerAction(false);
+    }
+  };
+
+  // Submit Admin Action (Approve / Reject - Role 1 only)
+  const handleAdminActionSubmit = async () => {
+    if (!adminActionItem) return;
+    setIsSubmittingAdminAction(true);
+    try {
+      await reimbursementService.adminAction(
+        adminActionItem.item.id,
+        adminActionItem.action,
+        adminActionRemarks.trim() || undefined
+      );
+      toast({
+        title:
+          adminActionItem.action === "approve"
+            ? "Reimbursement Approved by Admin"
+            : "Reimbursement Rejected by Admin",
+        description:
+          adminActionItem.action === "approve"
+            ? "Reimbursement has received final approval and is ready for payment."
+            : "Reimbursement has been rejected.",
+      });
+      setAdminActionItem(null);
+      setAdminActionRemarks("");
+      fetchAdminQueue();
+      fetchMyReimbursements();
+    } catch (err: any) {
+      toast({
+        title: "Action Failed",
+        description: err?.message || "Failed to process admin action.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsSubmittingAdminAction(false);
+    }
+  };
+
+  // Mark as Paid Submit (Admin only)
+  const handleMarkAsPaidSubmit = async () => {
+    if (!markingPaidItem) return;
+    setIsMarkingPaid(true);
+    try {
+      await reimbursementService.markAsPaid(markingPaidItem.id);
+      toast({
+        title: "Marked as Paid",
+        description: "Reimbursement has been marked as Paid.",
+      });
+      setMarkingPaidItem(null);
+      fetchAdminQueue();
+      fetchMyReimbursements();
+    } catch (err: any) {
+      toast({
+        title: "Action Failed",
+        description: err?.message || "Failed to mark reimbursement as paid.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsMarkingPaid(false);
+    }
+  };
+
+  // Helper to render approval status badge
+  const renderStatusBadge = (status: ExpenseStatus) => {
+    switch (status) {
+      case "PENDING_MANAGER":
+      case "PENDING":
+        return (
+          <Badge className="bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 gap-1 text-[11px] font-semibold hover:bg-amber-500/20 whitespace-nowrap">
+            <Clock className="h-3 w-3 animate-pulse" /> Pending Manager
+          </Badge>
+        );
+      case "PENDING_ADMIN":
+        return (
+          <Badge className="bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-500/30 gap-1 text-[11px] font-semibold hover:bg-blue-500/20 whitespace-nowrap">
+            <UserCheck className="h-3 w-3" /> Pending Admin
+          </Badge>
+        );
+      case "APPROVED":
+        return (
+          <Badge className="bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 gap-1 text-[11px] font-semibold hover:bg-emerald-500/20 whitespace-nowrap">
+            <CheckCircle2 className="h-3 w-3" /> Approved
+          </Badge>
+        );
+      case "REJECTED":
+        return (
+          <Badge className="bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/30 gap-1 text-[11px] font-semibold hover:bg-rose-500/20 whitespace-nowrap">
+            <XCircle className="h-3 w-3" /> Rejected
+          </Badge>
+        );
+      default:
+        return <Badge variant="outline">{status}</Badge>;
+    }
+  };
+
+  const renderPaymentBadge = (item: ReimbursementItem) =>
+    item.paymentStatus === "PAID" ? (
+      <Badge className="bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 text-[10px] font-semibold">
+        Paid
+      </Badge>
+    ) : (
+      <Badge variant="outline" className="text-muted-foreground text-[10px]">
+        Unpaid
+      </Badge>
+    );
+
+  // Summary Metrics for Submissions
+  const myStats = useMemo(() => {
+    const total = myReimbursements.length;
+    const pendingMgr = myReimbursements.filter(
+      (r) => r.status === "PENDING_MANAGER" || r.status === "PENDING"
+    ).length;
+    const pendingAdm = myReimbursements.filter((r) => r.status === "PENDING_ADMIN").length;
+    const approved = myReimbursements.filter((r) => r.status === "APPROVED").length;
+    const totalAmount = myReimbursements.reduce(
+      (sum, r) => sum + (parseFloat(String(r.amount)) || 0),
+      0
+    );
+    return { total, pendingMgr, pendingAdm, approved, totalAmount };
+  }, [myReimbursements]);
+
+  const pendingManagerCount = managerQueue.filter(
+    (r) => r.status === "PENDING_MANAGER" || r.status === "PENDING"
+  ).length;
+
+  const pendingAdminCount = adminQueue.filter((r) => r.status === "PENDING_ADMIN").length;
+
+  const formatCurrency = (val: number | string) => {
+    const num = typeof val === "string" ? parseFloat(val) : val;
+    return new Intl.NumberFormat("en-IN", {
+      style: "currency",
+      currency: "INR",
+      maximumFractionDigits: 2,
+    }).format(isNaN(num) ? 0 : num);
+  };
+
+  return (
+    <>
+      <div className="p-4 sm:p-6 max-w-7xl mx-auto space-y-6">
+        {/* Top Header */}
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b pb-5">
+          <div>
+            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground flex items-center gap-2.5">
+              <Receipt className="h-7 w-7 text-primary" />
+              Internal Reimbursements
+            </h1>
+            <p className="text-sm text-muted-foreground mt-1">
+              Submit, track and manage employee expense claims with multi-level Manager and Admin
+              approval workflow.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <Button onClick={handleOpenAddModal} className="shadow-sm font-semibold gap-1.5">
+              <Plus className="h-4 w-4" />
+              Submit Reimbursement
+            </Button>
+          </div>
+        </div>
+
+        {/* Tabs Navigation */}
+        <Tabs
+          value={activeTab}
+          onValueChange={(val) => {
+            setActiveTab(val as "my" | "manager" | "admin");
+            setPage(1);
+          }}
+          className="w-full space-y-6"
+        >
+          <div className="flex items-center justify-start border-b pb-1">
+            <TabsList className="bg-muted/60 p-1 rounded-lg h-auto flex flex-wrap gap-1">
+              <TabsTrigger value="my" className="py-1.5 px-3 text-xs sm:text-sm font-medium gap-2">
+                <Receipt className="h-4 w-4" />
+                <span>My Submissions</span>
+                {myReimbursements.length > 0 && (
+                  <Badge variant="secondary" className="px-1.5 py-0.5 text-[10px] ml-1">
+                    {myReimbursements.length}
+                  </Badge>
+                )}
+              </TabsTrigger>
+
+              {isUserAManager && (
+                <TabsTrigger
+                  value="manager"
+                  className="py-1.5 px-3 text-xs sm:text-sm font-medium gap-2"
+                >
+                  <UserCheck className="h-4 w-4" />
+                  <span>Manager Queue</span>
+                  {pendingManagerCount > 0 && (
+                    <Badge className="bg-amber-500 text-white px-1.5 py-0.5 text-[10px] ml-1">
+                      {pendingManagerCount}
+                    </Badge>
+                  )}
+                </TabsTrigger>
+              )}
+
+              {/* Admin Queue Tab: Strictly for Admin Role 1 only */}
+              {isAdmin && (
+                <TabsTrigger
+                  value="admin"
+                  className="py-1.5 px-3 text-xs sm:text-sm font-medium gap-2"
+                >
+                  <ShieldAlert className="h-4 w-4" />
+                  <span>Admin Queue</span>
+                  {pendingAdminCount > 0 && (
+                    <Badge className="bg-blue-600 text-white px-1.5 py-0.5 text-[10px] ml-1">
+                      {pendingAdminCount}
+                    </Badge>
+                  )}
+                </TabsTrigger>
+              )}
+            </TabsList>
+          </div>
+
+          {/* ======================================================== */}
+          {/* TAB 1: MY SUBMISSIONS                                   */}
+          {/* ======================================================== */}
+          <TabsContent value="my" className="space-y-6">
+            {/* Summary Metric Cards */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <Card className="border shadow-xs bg-card">
+                <CardContent className="p-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium text-muted-foreground">Total Claims</span>
+                    <Receipt className="h-4 w-4 text-primary/70" />
+                  </div>
+                  <div className="text-xl font-bold mt-1 text-foreground">{myStats.total}</div>
+                  <div className="text-[11px] text-muted-foreground mt-0.5">
+                    Amount: {formatCurrency(myStats.totalAmount)}
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="border shadow-xs bg-card">
+                <CardContent className="p-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium text-amber-600 dark:text-amber-400">
+                      Pending Manager
+                    </span>
+                    <Clock className="h-4 w-4 text-amber-500" />
+                  </div>
+                  <div className="text-xl font-bold mt-1 text-foreground">{myStats.pendingMgr}</div>
+                  <div className="text-[11px] text-muted-foreground mt-0.5">
+                    Awaiting manager review
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="border shadow-xs bg-card">
+                <CardContent className="p-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium text-blue-600 dark:text-blue-400">
+                      Pending Admin
+                    </span>
+                    <UserCheck className="h-4 w-4 text-blue-500" />
+                  </div>
+                  <div className="text-xl font-bold mt-1 text-foreground">{myStats.pendingAdm}</div>
+                  <div className="text-[11px] text-muted-foreground mt-0.5">Manager approved</div>
+                </CardContent>
+              </Card>
+
+              <Card className="border shadow-xs bg-card">
+                <CardContent className="p-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                      Approved
+                    </span>
+                    <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                  </div>
+                  <div className="text-xl font-bold mt-1 text-foreground">{myStats.approved}</div>
+                  <div className="text-[11px] text-muted-foreground mt-0.5">Ready / Paid</div>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Filters Bar */}
+            <Card className="border shadow-xs">
+              <CardContent className="p-4 space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+                  <div className="relative">
+                    <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      placeholder="Search head, client, dept..."
+                      value={search}
+                      onChange={(e) => {
+                        setSearch(e.target.value);
+                        setPage(1);
+                      }}
+                      className="pl-8 text-xs"
+                    />
+                  </div>
+
+                  <Select value={selectedApprovalStatus} onValueChange={setSelectedApprovalStatus}>
+                    <SelectTrigger className="text-xs">
+                      <SelectValue placeholder="Approval Status" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Approval Statuses</SelectItem>
+                      <SelectItem value="PENDING_MANAGER">Pending Manager</SelectItem>
+                      <SelectItem value="PENDING_ADMIN">Pending Admin</SelectItem>
+                      <SelectItem value="APPROVED">Approved</SelectItem>
+                      <SelectItem value="REJECTED">Rejected</SelectItem>
+                    </SelectContent>
+                  </Select>
+
+                  <Select value={selectedExpenseHead} onValueChange={setSelectedExpenseHead}>
+                    <SelectTrigger className="text-xs">
+                      <SelectValue placeholder="Expense Head" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Expense Heads</SelectItem>
+                      {expenseHeads.map((h) => (
+                        <SelectItem key={h} value={h}>
+                          {h}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+
+                  <Select value={selectedPaymentStatus} onValueChange={setSelectedPaymentStatus}>
+                    <SelectTrigger className="text-xs">
+                      <SelectValue placeholder="Payment Status" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Payment Statuses</SelectItem>
+                      <SelectItem value="UNPAID">Unpaid</SelectItem>
+                      <SelectItem value="PAID">Paid</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="flex justify-end pt-1">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleResetFilters}
+                    className="text-xs h-7"
+                  >
+                    Reset Filters
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Submissions Table */}
+            <Card className="border shadow-xs overflow-hidden">
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-muted/40">
+                      <TableHead className="w-[110px]">Expense Date</TableHead>
+                      <TableHead className="min-w-[180px]">Head & Context</TableHead>
+                      <TableHead className="w-[90px] text-center">Billable</TableHead>
+                      <TableHead className="w-[120px] text-right">Amount</TableHead>
+                      <TableHead className="w-[140px] text-center">Approval Status</TableHead>
+                      <TableHead className="w-[90px] text-center">Payment</TableHead>
+                      <TableHead className="w-[110px] text-center">Attachment</TableHead>
+                      <TableHead className="w-[100px] text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {isLoadingMy ? (
+                      <TableRow>
+                        <TableCell colSpan={8} className="h-32 text-center text-muted-foreground">
+                          <RefreshCw className="h-6 w-6 animate-spin mx-auto mb-2 text-primary" />
+                          Loading reimbursement records...
+                        </TableCell>
+                      </TableRow>
+                    ) : myReimbursements.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={8} className="h-32 text-center text-muted-foreground">
+                          No reimbursement claims found. Click "Submit Reimbursement" to create your
+                          first claim.
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      myReimbursements.map((item) => (
+                        <TableRow key={item.id} className="hover:bg-muted/30">
+                          <TableCell className="text-xs font-medium whitespace-nowrap">
+                            {format(new Date(item.expenseDate || item.createdAt), "dd MMM yyyy")}
+                          </TableCell>
+
+                          <TableCell>
+                            <div className="font-semibold text-xs text-foreground flex items-center gap-1.5">
+                              <Badge variant="outline" className="text-[11px] font-medium">
+                                {item.expenseHead}
+                              </Badge>
+                            </div>
+                            <div className="text-[11px] text-muted-foreground mt-0.5 truncate max-w-[200px]">
+                              {item.expenseFor === "CLIENT" ? (
+                                <span>
+                                  Client: {item.clientName || item.client?.clientName || "Client"}
+                                </span>
+                              ) : (
+                                <span>Dept: {item.departmentName || "Internal"}</span>
+                              )}
+                            </div>
+                          </TableCell>
+
+                          <TableCell className="text-center">
+                            {item.billable ? (
+                              <Badge className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-[10px] font-semibold">
+                                Yes
+                              </Badge>
+                            ) : (
+                              <Badge variant="outline" className="text-muted-foreground text-[10px]">
+                                No
+                              </Badge>
+                            )}
+                          </TableCell>
+
+                          <TableCell className="text-right font-bold text-xs text-foreground whitespace-nowrap">
+                            {formatCurrency(item.amount)}
+                          </TableCell>
+
+                          <TableCell className="text-center">{renderStatusBadge(item.status)}</TableCell>
+
+                          <TableCell className="text-center">{renderPaymentBadge(item)}</TableCell>
+
+                          <TableCell className="text-center">
+                            {item.attachmentUrl ? (
+                              <div className="flex items-center justify-center gap-1">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-7 px-2 text-xs gap-1"
+                                  onClick={() => handleViewAttachment(item)}
+                                >
+                                  <Eye className="h-3.5 w-3.5 text-primary" /> View
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-7 w-7"
+                                  onClick={() => handleDownloadAttachment(item)}
+                                >
+                                  <Download className="h-3.5 w-3.5" />
+                                </Button>
+                              </div>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">None</span>
+                            )}
+                          </TableCell>
+
+                          <TableCell className="text-right">
+                            <div className="flex items-center justify-end gap-1">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                                onClick={() => setSelectedHistoryItem(item)}
+                                title="View Approval History"
+                              >
+                                <History className="h-4 w-4" />
+                              </Button>
+
+                              {(item.status === "PENDING_MANAGER" || item.status === "PENDING") && (
+                                <>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                                    onClick={() => handleOpenEditModal(item)}
+                                    title="Edit"
+                                  >
+                                    <Pencil className="h-3.5 w-3.5" />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-7 w-7 text-destructive hover:bg-destructive/10"
+                                    onClick={() => setDeletingId(item.id)}
+                                    title="Delete"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </Button>
+                                </>
+                              )}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+
+              <PaginationControls
+                page={page}
+                totalPages={totalPages}
+                totalRecords={totalRecords}
+                setPage={setPage}
+              />
+            </Card>
+          </TabsContent>
+
+          {/* ======================================================== */}
+          {/* TAB 2: MANAGER APPROVALS                                 */}
+          {/* ======================================================== */}
+          {isUserAManager && (
+            <TabsContent value="manager" className="space-y-6">
+              <Card className="border shadow-xs">
+                <CardHeader className="p-4 border-b bg-muted/20">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                    <div>
+                      <CardTitle className="text-base font-bold flex items-center gap-2">
+                        <UserCheck className="h-5 w-5 text-amber-500" />
+                        Manager Approval Queue
+                      </CardTitle>
+                      <CardDescription className="text-xs">
+                        Review and approve/reject reimbursement requests submitted by employees
+                        assigned to you.
+                      </CardDescription>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <Select
+                        value={managerFilterStatus}
+                        onValueChange={(v) => {
+                          setManagerFilterStatus(v);
+                          setPage(1);
+                        }}
+                      >
+                        <SelectTrigger className="w-[180px] h-8 text-xs">
+                          <SelectValue placeholder="Filter Status" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="PENDING_MANAGER">Awaiting My Review</SelectItem>
+                          <SelectItem value="PENDING_ADMIN">Forwarded to Admin</SelectItem>
+                          <SelectItem value="APPROVED">Fully Approved</SelectItem>
+                          <SelectItem value="REJECTED">Rejected</SelectItem>
+                          <SelectItem value="all">All Statuses</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                </CardHeader>
+
+                <CardContent className="p-0">
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="bg-muted/40">
+                          <TableHead className="min-w-[150px]">Employee</TableHead>
+                          <TableHead className="w-[110px]">Date</TableHead>
+                          <TableHead className="w-[130px]">Expense Head</TableHead>
+                          <TableHead className="min-w-[150px]">Context</TableHead>
+                          <TableHead className="w-[120px] text-right">Amount</TableHead>
+                          <TableHead className="w-[100px] text-center">Receipt</TableHead>
+                          <TableHead className="w-[140px] text-center">Status</TableHead>
+                          <TableHead className="w-[150px] text-right">Decision / Actions</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {isLoadingManager ? (
+                          <TableRow>
+                            <TableCell
+                              colSpan={8}
+                              className="h-32 text-center text-muted-foreground"
+                            >
+                              <RefreshCw className="h-6 w-6 animate-spin mx-auto mb-2 text-primary" />
+                              Loading manager approval queue...
+                            </TableCell>
+                          </TableRow>
+                        ) : managerQueue.length === 0 ? (
+                          <TableRow>
+                            <TableCell
+                              colSpan={8}
+                              className="h-32 text-center text-muted-foreground"
+                            >
+                              No reimbursement requests awaiting manager review.
+                            </TableCell>
+                          </TableRow>
+                        ) : (
+                          managerQueue.map((item) => (
+                            <TableRow key={item.id} className="hover:bg-muted/30">
+                              <TableCell className="font-medium text-xs">
+                                <div className="font-semibold text-foreground">
+                                  {item.employee?.fullName || item.user?.name || "Employee"}
+                                </div>
+                                <div className="text-[11px] text-muted-foreground">
+                                  {item.employee?.department || "General"}
+                                </div>
+                              </TableCell>
+
+                              <TableCell className="text-xs whitespace-nowrap">
+                                {format(new Date(item.expenseDate || item.createdAt), "dd MMM yyyy")}
+                              </TableCell>
+
+                              <TableCell>
+                                <Badge variant="outline" className="text-xs font-medium">
+                                  {item.expenseHead}
+                                </Badge>
+                              </TableCell>
+
+                              <TableCell className="text-xs text-muted-foreground">
+                                <div className="truncate max-w-[160px]">
+                                  {item.expenseFor === "CLIENT"
+                                    ? `Client: ${item.clientName || item.client?.clientName || "N/A"}`
+                                    : `Dept: ${item.departmentName || "N/A"}`}
+                                </div>
+                                {item.billable && (
+                                  <Badge className="mt-0.5 bg-emerald-500/10 text-emerald-600 text-[10px]">
+                                    Billable
+                                  </Badge>
+                                )}
+                              </TableCell>
+
+                              <TableCell className="text-right font-bold text-xs text-foreground whitespace-nowrap">
+                                {formatCurrency(item.amount)}
+                              </TableCell>
+
+                              <TableCell className="text-center">
+                                {item.attachmentUrl ? (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-7 px-2 text-xs gap-1"
+                                    onClick={() => handleViewAttachment(item)}
+                                  >
+                                    <Eye className="h-3.5 w-3.5 text-primary" /> Receipt
+                                  </Button>
+                                ) : (
+                                  <span className="text-xs text-muted-foreground">None</span>
+                                )}
+                              </TableCell>
+
+                              <TableCell className="text-center">
+                                {renderStatusBadge(item.status)}
+                              </TableCell>
+
+                              <TableCell className="text-right">
+                                {item.status === "PENDING_MANAGER" ? (
+                                  <div className="flex items-center justify-end gap-1.5">
+                                    <Button
+                                      size="sm"
+                                      className="h-7 px-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs gap-1"
+                                      onClick={() => {
+                                        setManagerActionItem({ item, action: "approve" });
+                                        setManagerActionRemarks("");
+                                      }}
+                                    >
+                                      <Check className="h-3.5 w-3.5" /> Approve
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7 px-2.5 text-rose-600 border-rose-200 hover:bg-rose-50 text-xs gap-1"
+                                      onClick={() => {
+                                        setManagerActionItem({ item, action: "reject" });
+                                        setManagerActionRemarks("");
+                                      }}
+                                    >
+                                      <X className="h-3.5 w-3.5" /> Reject
+                                    </Button>
+                                  </div>
+                                ) : (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 px-2 text-xs text-muted-foreground gap-1"
+                                    onClick={() => setSelectedHistoryItem(item)}
+                                  >
+                                    <History className="h-3.5 w-3.5" /> Details
+                                  </Button>
+                                )}
+                              </TableCell>
+                            </TableRow>
+                          ))
+                        )}
+                      </TableBody>
+                    </Table>
+                  </div>
+
+                  <PaginationControls
+                    page={page}
+                    totalPages={totalPages}
+                    totalRecords={totalRecords}
+                    setPage={setPage}
+                  />
+                </CardContent>
+              </Card>
+            </TabsContent>
+          )}
+
+          {/* ======================================================== */}
+          {/* TAB 3: ADMIN APPROVALS (Strictly Role 1 only)            */}
+          {/* ======================================================== */}
+          {isAdmin && (
+            <TabsContent value="admin" className="space-y-6">
+              <Card className="border shadow-xs">
+                <CardHeader className="p-4 border-b bg-muted/20">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                    <div>
+                      <CardTitle className="text-base font-bold flex items-center gap-2">
+                        <ShieldAlert className="h-5 w-5 text-blue-600" />
+                        Admin Approval & Payout Queue
+                      </CardTitle>
+                      <CardDescription className="text-xs">
+                        Review reimbursements that have passed Manager approval, grant final
+                        approval, and process payouts.
+                      </CardDescription>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <Select
+                        value={adminFilterStatus}
+                        onValueChange={(v) => {
+                          setAdminFilterStatus(v);
+                          setPage(1);
+                        }}
+                      >
+                        <SelectTrigger className="w-[180px] h-8 text-xs">
+                          <SelectValue placeholder="Filter Status" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="PENDING_ADMIN">Awaiting Admin Review</SelectItem>
+                          <SelectItem value="APPROVED">Approved Claims</SelectItem>
+                          <SelectItem value="REJECTED">Rejected Claims</SelectItem>
+                          <SelectItem value="all">All Claims</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                </CardHeader>
+
+                <CardContent className="p-0">
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="bg-muted/40">
+                          <TableHead className="min-w-[150px]">Employee</TableHead>
+                          <TableHead className="w-[110px]">Date</TableHead>
+                          <TableHead className="min-w-[150px]">Head & Context</TableHead>
+                          <TableHead className="min-w-[130px]">Manager Review</TableHead>
+                          <TableHead className="w-[120px] text-right">Amount</TableHead>
+                          <TableHead className="w-[100px] text-center">Receipt</TableHead>
+                          <TableHead className="w-[130px] text-center">Status</TableHead>
+                          <TableHead className="w-[90px] text-center">Payment</TableHead>
+                          <TableHead className="w-[160px] text-right">Actions</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {isLoadingAdmin ? (
+                          <TableRow>
+                            <TableCell
+                              colSpan={9}
+                              className="h-32 text-center text-muted-foreground"
+                            >
+                              <RefreshCw className="h-6 w-6 animate-spin mx-auto mb-2 text-primary" />
+                              Loading admin review queue...
+                            </TableCell>
+                          </TableRow>
+                        ) : adminQueue.length === 0 ? (
+                          <TableRow>
+                            <TableCell
+                              colSpan={9}
+                              className="h-32 text-center text-muted-foreground"
+                            >
+                              No reimbursement requests in this admin queue view.
+                            </TableCell>
+                          </TableRow>
+                        ) : (
+                          adminQueue.map((item) => (
+                            <TableRow key={item.id} className="hover:bg-muted/30">
+                              <TableCell className="font-medium text-xs">
+                                <div className="font-semibold text-foreground">
+                                  {item.employee?.fullName || item.user?.name || "Employee"}
+                                </div>
+                                <div className="text-[11px] text-muted-foreground">
+                                  {item.employee?.department || "General"}
+                                </div>
+                              </TableCell>
+
+                              <TableCell className="text-xs whitespace-nowrap">
+                                {format(new Date(item.expenseDate || item.createdAt), "dd MMM yyyy")}
+                              </TableCell>
+
+                              <TableCell>
+                                <Badge variant="outline" className="text-xs font-medium">
+                                  {item.expenseHead}
+                                </Badge>
+                                <div className="text-[11px] text-muted-foreground mt-0.5 truncate max-w-[150px]">
+                                  {item.expenseFor === "CLIENT"
+                                    ? `Client: ${item.clientName || item.client?.clientName || "N/A"}`
+                                    : `Dept: ${item.departmentName || "N/A"}`}
+                                </div>
+                              </TableCell>
+
+                              <TableCell className="text-xs">
+                                {item.managerActionBy ? (
+                                  <div>
+                                    <div className="font-medium text-emerald-600 dark:text-emerald-400 flex items-center gap-1 whitespace-nowrap">
+                                      <Check className="h-3 w-3" />
+                                      {item.managerActionBy.name || "Manager"}
+                                    </div>
+                                    {item.managerRemarks && (
+                                      <div className="text-[10px] text-muted-foreground italic truncate max-w-[120px]">
+                                        "{item.managerRemarks}"
+                                      </div>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <span className="text-muted-foreground text-[11px]">
+                                    Direct to Admin
+                                  </span>
+                                )}
+                              </TableCell>
+
+                              <TableCell className="text-right font-bold text-xs text-foreground whitespace-nowrap">
+                                {formatCurrency(item.amount)}
+                              </TableCell>
+
+                              <TableCell className="text-center">
+                                {item.attachmentUrl ? (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-7 px-2 text-xs gap-1"
+                                    onClick={() => handleViewAttachment(item)}
+                                  >
+                                    <Eye className="h-3.5 w-3.5 text-primary" /> Receipt
+                                  </Button>
+                                ) : (
+                                  <span className="text-xs text-muted-foreground">None</span>
+                                )}
+                              </TableCell>
+
+                              <TableCell className="text-center">
+                                {renderStatusBadge(item.status)}
+                              </TableCell>
+
+                              <TableCell className="text-center">{renderPaymentBadge(item)}</TableCell>
+
+                              <TableCell className="text-right">
+                                <div className="flex items-center justify-end gap-1">
+                                  {/* Admin can edit claims while pending final review.
+                                      Paid claims are intentionally locked. */}
+                                  {item.status === "PENDING_ADMIN" &&
+                                    item.paymentStatus !== "PAID" && (
+                                      <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-8 w-8 text-muted-foreground hover:text-blue-500 hover:bg-blue-500/10"
+                                        onClick={() => handleOpenEditModal(item)}
+                                        title="Edit Reimbursement"
+                                        aria-label="Edit Reimbursement"
+                                      >
+                                        <Pencil className="h-4 w-4" />
+                                      </Button>
+                                    )}
+
+                                  {item.status === "PENDING_ADMIN" && (
+                                    <>
+                                      <Button
+                                        size="sm"
+                                        className="h-7 px-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs gap-1"
+                                        onClick={() => {
+                                          setAdminActionItem({ item, action: "approve" });
+                                          setAdminActionRemarks("");
+                                        }}
+                                      >
+                                        <Check className="h-3.5 w-3.5" /> Approve
+                                      </Button>
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="h-7 px-2.5 text-rose-600 border-rose-200 hover:bg-rose-50 text-xs gap-1"
+                                        onClick={() => {
+                                          setAdminActionItem({ item, action: "reject" });
+                                          setAdminActionRemarks("");
+                                        }}
+                                      >
+                                        <X className="h-3.5 w-3.5" /> Reject
+                                      </Button>
+                                    </>
+                                  )}
+
+                                  {item.status === "APPROVED" && item.paymentStatus !== "PAID" && (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7 px-2 text-emerald-700 border-emerald-300 hover:bg-emerald-50 text-xs gap-1"
+                                      onClick={() => setMarkingPaidItem(item)}
+                                      title="Mark as Paid"
+                                    >
+                                      <CreditCard className="h-3.5 w-3.5" /> Mark Paid
+                                    </Button>
+                                  )}
+
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-7 w-7"
+                                    onClick={() => setSelectedHistoryItem(item)}
+                                    title="View Details & Audit"
+                                  >
+                                    <History className="h-3.5 w-3.5" />
+                                  </Button>
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          ))
+                        )}
+                      </TableBody>
+                    </Table>
+                  </div>
+
+                  <PaginationControls
+                    page={page}
+                    totalPages={totalPages}
+                    totalRecords={totalRecords}
+                    setPage={setPage}
+                  />
+                </CardContent>
+              </Card>
+            </TabsContent>
+          )}
+        </Tabs>
+
+        {/* ======================================================== */}
+        {/* MODAL: SUBMIT / EDIT REIMBURSEMENT                       */}
+        {/* ======================================================== */}
+        <Dialog open={isAddModalOpen} onOpenChange={setIsAddModalOpen}>
+          <DialogContent className="max-w-xl max-h-[90vh] overflow-y-auto">
+            <form onSubmit={handleSubmitForm} noValidate>
+              <DialogHeader>
+                <DialogTitle>
+                  {editingItem ? "Edit Employee Reimbursement" : "Add Employee Reimbursement"}
+                </DialogTitle>
+                <DialogDescription>
+                  Fill out the required expense details and attach receipt/bill file.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="grid gap-4 py-4">
+                {/* Employee Selection (Admin / Manager only) */}
+                {isAdminOrManager && employees.length > 0 && (
+                  <div className="space-y-1.5">
+                    <Label htmlFor="employee">Employee Name *</Label>
+                    <Select value={formEmployeeId} onValueChange={setFormEmployeeId}>
+                      <SelectTrigger id="employee">
+                        <SelectValue placeholder="Select Employee" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {employees.map((emp) => (
+                          <SelectItem key={emp.id} value={emp.id}>
+                            {emp.fullName} ({emp.employeeId} - {emp.department})
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {formErrors.employeeId && (
+                      <p className="text-xs text-destructive">{formErrors.employeeId}</p>
+                    )}
+                  </div>
+                )}
+
+                {/* Expense Date & Expense Head */}
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="expenseDate">Expense Date *</Label>
+                    <Input
+                      id="expenseDate"
+                      type="date"
+                      value={formExpenseDate}
+                      onChange={(e) => setFormExpenseDate(e.target.value)}
+                    />
+                    {formErrors.expenseDate && (
+                      <p className="text-xs text-destructive">{formErrors.expenseDate}</p>
+                    )}
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label htmlFor="expenseHead">Expense Head *</Label>
+                    <Select value={formExpenseHead} onValueChange={setFormExpenseHead}>
+                      <SelectTrigger id="expenseHead">
+                        <SelectValue placeholder="Select Expense Category" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {expenseHeads.map((head) => (
+                          <SelectItem key={head} value={head}>
+                            {head}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {formErrors.expenseHead && (
+                      <p className="text-xs text-destructive">{formErrors.expenseHead}</p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Expense For (Client vs Internal Office) */}
+                <div className="space-y-1.5">
+                  <Label>Expense For *</Label>
+                  <RadioGroup
+                    value={formExpenseFor}
+                    onValueChange={(val) => setFormExpenseFor(val as ExpenseFor)}
+                    className="flex gap-4 pt-1"
+                  >
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value="CLIENT" id="for-client" />
+                      <Label htmlFor="for-client" className="cursor-pointer font-normal">
+                        Client
+                      </Label>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value="INTERNAL_OFFICE" id="for-internal" />
+                      <Label htmlFor="for-internal" className="cursor-pointer font-normal">
+                        Internal Office
+                      </Label>
+                    </div>
+                  </RadioGroup>
+                </div>
+
+                {/* Client / Department */}
+                {formExpenseFor === "CLIENT" ? (
+                  <div className="space-y-1.5">
+                    <Label htmlFor="clientName">Client Name *</Label>
+                    {workspaces.length > 0 ? (
+                      <Select
+                        value={formClientId}
+                        onValueChange={(val) => {
+                          setFormClientId(val);
+                          const ws = workspaces.find((w) => w.id === val);
+                          if (ws) setFormClientName(ws.clientName);
+                        }}
+                      >
+                        <SelectTrigger id="clientName">
+                          <SelectValue placeholder="Select Client / Workspace" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {workspaces.map((ws) => (
+                            <SelectItem key={ws.id} value={ws.id}>
+                              {ws.clientName} ({ws.companyName})
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <Input
+                        id="clientName"
+                        placeholder="Enter Client / Company Name"
+                        value={formClientName}
+                        onChange={(e) => setFormClientName(e.target.value)}
+                      />
+                    )}
+                    {formErrors.clientName && (
+                      <p className="text-xs text-destructive">{formErrors.clientName}</p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    <Label htmlFor="departmentName">Department Name *</Label>
+                    <Input
+                      id="departmentName"
+                      placeholder="e.g. Engineering, Sales, HR, Operations"
+                      value={formDepartmentName}
+                      onChange={(e) => setFormDepartmentName(e.target.value)}
+                    />
+                    {formErrors.departmentName && (
+                      <p className="text-xs text-destructive">{formErrors.departmentName}</p>
+                    )}
+                  </div>
+                )}
+
+                {/* Billable + Amount */}
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  {formExpenseFor === "CLIENT" && (
+                    <div className="space-y-1.5">
+                      <Label>Billable *</Label>
+                      <RadioGroup
+                        value={formBillable ? "yes" : "no"}
+                        onValueChange={(val) => setFormBillable(val === "yes")}
+                        className="flex gap-4 pt-1"
+                      >
+                        <div className="flex items-center space-x-2">
+                          <RadioGroupItem value="yes" id="billable-yes" />
+                          <Label htmlFor="billable-yes" className="cursor-pointer font-normal">
+                            Yes
+                          </Label>
+                        </div>
+                        <div className="flex items-center space-x-2">
+                          <RadioGroupItem value="no" id="billable-no" />
+                          <Label htmlFor="billable-no" className="cursor-pointer font-normal">
+                            No
+                          </Label>
+                        </div>
+                      </RadioGroup>
+                    </div>
+                  )}
+
+                  <div className="space-y-1.5">
+                    <Label htmlFor="amount">Amount (₹) *</Label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-2.5 text-sm font-semibold text-muted-foreground">
+                        ₹
+                      </span>
+                      <Input
+                        id="amount"
+                        type="number"
+                        step="0.01"
+                        min="0.01"
+                        placeholder="0.00"
+                        value={formAmount}
+                        onChange={(e) => setFormAmount(e.target.value)}
+                        className="pl-8"
+                      />
+                    </div>
+                    {formErrors.amount && (
+                      <p className="text-xs text-destructive">{formErrors.amount}</p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Notes */}
+                <div className="space-y-1.5">
+                  <Label htmlFor="notes">Notes / Purpose (Optional)</Label>
+                  <Textarea
+                    id="notes"
+                    placeholder="Provide additional details regarding the expense..."
+                    value={formNotes}
+                    onChange={(e) => setFormNotes(e.target.value)}
+                    rows={3}
+                  />
+                </div>
+
+                {/* Attachment */}
+                <div className="space-y-1.5">
+                  <Label className="text-xs">
+                    Bill / Receipt Attachment {editingItem ? "(Optional if unchanged)" : "*"}
+                  </Label>
+                  <div className="border-2 border-dashed rounded-md p-3 text-center bg-muted/20 hover:bg-muted/40 transition">
+                    <Input
+                      type="file"
+                      accept=".pdf,.jpg,.jpeg,.png"
+                      onChange={handleFileChange}
+                      className="cursor-pointer text-xs"
+                    />
+                    <p className="text-[11px] text-muted-foreground mt-1">
+                      Allowed formats: PDF, JPG, JPEG, PNG (Max 5MB)
+                    </p>
+                    {formFile && (
+                      <p className="text-xs font-medium text-emerald-600 mt-1">
+                        Selected: {formFile.name} ({(formFile.size / 1024).toFixed(1)} KB)
+                      </p>
+                    )}
+                    {(formFileError || formErrors.attachment) && (
+                      <p className="text-xs text-destructive font-medium">
+                        {formFileError || formErrors.attachment}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <DialogFooter className="pt-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setIsAddModalOpen(false)}
+                  disabled={isSaving}
+                  className="text-xs"
+                >
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={isSaving} className="text-xs font-semibold">
+                  {isSaving ? (
+                    <>
+                      <RefreshCw className="h-3.5 w-3.5 animate-spin mr-1.5" /> Submitting...
+                    </>
+                  ) : editingItem ? (
+                    "Update Reimbursement"
+                  ) : (
+                    "Submit to Manager"
+                  )}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        {/* ======================================================== */}
+        {/* MODAL: MANAGER APPROVE / REJECT ACTION                   */}
+        {/* ======================================================== */}
+        <Dialog
+          open={Boolean(managerActionItem)}
+          onOpenChange={(open) => {
+            if (!open) setManagerActionItem(null);
+          }}
+        >
+          <DialogContent className="sm:max-w-[450px]">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                {managerActionItem?.action === "approve" ? (
+                  <>
+                    <CheckCircle2 className="h-5 w-5 text-emerald-600" />
+                    Approve Reimbursement (Manager)
+                  </>
+                ) : (
+                  <>
+                    <XCircle className="h-5 w-5 text-rose-600" />
+                    Reject Reimbursement (Manager)
+                  </>
+                )}
+              </DialogTitle>
+              <DialogDescription className="text-xs">
+                {managerActionItem?.action === "approve"
+                  ? "Approving will advance this reimbursement to the Admin approval queue."
+                  : "Rejecting will end this reimbursement workflow."}
+              </DialogDescription>
+            </DialogHeader>
+
+            {managerActionItem && (
+              <div className="space-y-4 pt-2">
+                <div className="bg-muted/40 p-3 rounded-md text-xs space-y-1">
+                  <div>
+                    <span className="text-muted-foreground">Employee: </span>
+                    <span className="font-semibold text-foreground">
+                      {managerActionItem.item.employee?.fullName || "Employee"}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Expense Head: </span>
+                    <span className="font-medium text-foreground">
+                      {managerActionItem.item.expenseHead}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Amount: </span>
+                    <span className="font-bold text-foreground">
+                      {formatCurrency(managerActionItem.item.amount)}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Manager Remarks / Feedback (Optional)</Label>
+                  <Textarea
+                    placeholder="Add any notes or justification for this decision..."
+                    value={managerActionRemarks}
+                    onChange={(e) => setManagerActionRemarks(e.target.value)}
+                    className="text-xs min-h-[80px]"
+                  />
+                </div>
+
+                <DialogFooter className="pt-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setManagerActionItem(null)}
+                    disabled={isSubmittingManagerAction}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    size="sm"
+                    className={
+                      managerActionItem.action === "approve"
+                        ? "bg-emerald-600 hover:bg-emerald-700 text-white font-semibold"
+                        : "bg-rose-600 hover:bg-rose-700 text-white font-semibold"
+                    }
+                    onClick={handleManagerActionSubmit}
+                    disabled={isSubmittingManagerAction}
+                  >
+                    {isSubmittingManagerAction ? (
+                      <>
+                        <RefreshCw className="h-3.5 w-3.5 animate-spin mr-1.5" /> Processing...
+                      </>
+                    ) : managerActionItem.action === "approve" ? (
+                      "Confirm Manager Approval"
+                    ) : (
+                      "Confirm Rejection"
+                    )}
+                  </Button>
+                </DialogFooter>
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
+
+        {/* ======================================================== */}
+        {/* MODAL: ADMIN APPROVE / REJECT ACTION (Role 1 only)       */}
+        {/* ======================================================== */}
+        {isAdmin && (
+          <Dialog
+            open={Boolean(adminActionItem)}
+            onOpenChange={(open) => {
+              if (!open) setAdminActionItem(null);
+            }}
+          >
+            <DialogContent className="sm:max-w-[450px]">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  {adminActionItem?.action === "approve" ? (
+                    <>
+                      <CheckCircle2 className="h-5 w-5 text-blue-600" />
+                      Final Admin Approval
+                    </>
+                  ) : (
+                    <>
+                      <XCircle className="h-5 w-5 text-rose-600" />
+                      Admin Rejection
+                    </>
+                  )}
+                </DialogTitle>
+                <DialogDescription className="text-xs">
+                  {adminActionItem?.action === "approve"
+                    ? "Approving will mark this reimbursement as Approved, ready for payout."
+                    : "Rejecting will end this reimbursement workflow."}
+                </DialogDescription>
+              </DialogHeader>
+
+              {adminActionItem && (
+                <div className="space-y-4 pt-2">
+                  <div className="bg-muted/40 p-3 rounded-md text-xs space-y-1">
+                    <div>
+                      <span className="text-muted-foreground">Employee: </span>
+                      <span className="font-semibold text-foreground">
+                        {adminActionItem.item.employee?.fullName || "Employee"}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Amount: </span>
+                      <span className="font-bold text-foreground">
+                        {formatCurrency(adminActionItem.item.amount)}
+                      </span>
+                    </div>
+                    {adminActionItem.item.managerRemarks && (
+                      <div>
+                        <span className="text-muted-foreground">Manager Remarks: </span>
+                        <span className="italic text-foreground">
+                          "{adminActionItem.item.managerRemarks}"
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Admin Remarks / Notes (Optional)</Label>
+                    <Textarea
+                      placeholder="e.g. Approved for payment in next cycle..."
+                      value={adminActionRemarks}
+                      onChange={(e) => setAdminActionRemarks(e.target.value)}
+                      className="text-xs min-h-[80px]"
+                    />
+                  </div>
+
+                  <DialogFooter className="pt-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setAdminActionItem(null)}
+                      disabled={isSubmittingAdminAction}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      size="sm"
+                      className={
+                        adminActionItem.action === "approve"
+                          ? "bg-blue-600 hover:bg-blue-700 text-white font-semibold"
+                          : "bg-rose-600 hover:bg-rose-700 text-white font-semibold"
+                      }
+                      onClick={handleAdminActionSubmit}
+                      disabled={isSubmittingAdminAction}
+                    >
+                      {isSubmittingAdminAction ? (
+                        <>
+                          <RefreshCw className="h-3.5 w-3.5 animate-spin mr-1.5" /> Processing...
+                        </>
+                      ) : adminActionItem.action === "approve" ? (
+                        "Confirm Admin Approval"
+                      ) : (
+                        "Confirm Rejection"
+                      )}
+                    </Button>
+                  </DialogFooter>
+                </div>
+              )}
+            </DialogContent>
+          </Dialog>
+        )}
+
+        {/* ======================================================== */}
+        {/* MODAL: APPROVAL HISTORY & AUDIT TRAIL                    */}
+        {/* ======================================================== */}
+        <Dialog
+          open={Boolean(selectedHistoryItem)}
+          onOpenChange={(open) => {
+            if (!open) setSelectedHistoryItem(null);
+          }}
+        >
+          <DialogContent className="sm:max-w-[500px]">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <History className="h-5 w-5 text-primary" />
+                Approval Workflow & History
+              </DialogTitle>
+              <DialogDescription className="text-xs">
+                Complete audit trail of submissions and approvals.
+              </DialogDescription>
+            </DialogHeader>
+
+            {selectedHistoryItem && (
+              <div className="space-y-5 pt-3">
+                <div className="relative pl-6 space-y-6 before:absolute before:left-2.5 before:top-2 before:bottom-2 before:w-0.5 before:bg-border">
+                  {/* Step 1: Submission */}
+                  <div className="relative">
+                    <div className="absolute -left-6 top-0.5 h-5 w-5 rounded-full bg-primary/20 border border-primary flex items-center justify-center">
+                      <Receipt className="h-3 w-3 text-primary" />
+                    </div>
+                    <div>
+                      <div className="font-semibold text-xs text-foreground">
+                        Submitted by {selectedHistoryItem.employee?.fullName || "Employee"}
+                      </div>
+                      <div className="text-[11px] text-muted-foreground">
+                        {format(new Date(selectedHistoryItem.createdAt), "dd MMM yyyy, hh:mm a")}
+                      </div>
+                      {selectedHistoryItem.notes && (
+                        <div className="text-xs bg-muted/30 p-2 rounded mt-1 text-muted-foreground">
+                          Note: {selectedHistoryItem.notes}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Step 2: Manager Stage */}
+                  <div className="relative">
+                    <div
+                      className={`absolute -left-6 top-0.5 h-5 w-5 rounded-full flex items-center justify-center border ${
+                        selectedHistoryItem.managerActionAt
+                          ? selectedHistoryItem.status === "REJECTED" &&
+                            !selectedHistoryItem.adminActionAt
+                            ? "bg-rose-500/20 border-rose-500 text-rose-600"
+                            : "bg-emerald-500/20 border-emerald-500 text-emerald-600"
+                          : "bg-muted border-muted-foreground/40 text-muted-foreground"
+                      }`}
+                    >
+                      <UserCheck className="h-3 w-3" />
+                    </div>
+                    <div>
+                      <div className="font-semibold text-xs text-foreground">
+                        Stage 1: Manager Review
+                      </div>
+                      {selectedHistoryItem.managerActionAt ? (
+                        <div>
+                          <div className="text-[11px] text-muted-foreground">
+                            Actioned by {selectedHistoryItem.managerActionBy?.name || "Manager"} on{" "}
+                            {format(
+                              new Date(selectedHistoryItem.managerActionAt),
+                              "dd MMM yyyy, hh:mm a"
+                            )}
+                          </div>
+                          {selectedHistoryItem.managerRemarks && (
+                            <div className="text-xs bg-muted/30 p-2 rounded mt-1 text-muted-foreground">
+                              Manager Remarks: "{selectedHistoryItem.managerRemarks}"
+                            </div>
+                          )}
+                        </div>
+                      ) : selectedHistoryItem.managerId ? (
+                        <div className="text-[11px] text-amber-600">
+                          Awaiting Manager Review (
+                          {selectedHistoryItem.manager?.name || "Assigned Manager"})
+                        </div>
+                      ) : (
+                        <div className="text-[11px] text-muted-foreground">
+                          No manager assigned; routed directly to Admin.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Step 3: Admin Stage */}
+                  <div className="relative">
+                    <div
+                      className={`absolute -left-6 top-0.5 h-5 w-5 rounded-full flex items-center justify-center border ${
+                        selectedHistoryItem.adminActionAt
+                          ? selectedHistoryItem.status === "APPROVED"
+                            ? "bg-emerald-500/20 border-emerald-500 text-emerald-600"
+                            : "bg-rose-500/20 border-rose-500 text-rose-600"
+                          : "bg-muted border-muted-foreground/40 text-muted-foreground"
+                      }`}
+                    >
+                      <ShieldAlert className="h-3 w-3" />
+                    </div>
+                    <div>
+                      <div className="font-semibold text-xs text-foreground">
+                        Stage 2: Admin Final Review
+                      </div>
+                      {selectedHistoryItem.adminActionAt ? (
+                        <div>
+                          <div className="text-[11px] text-muted-foreground">
+                            Decision:{" "}
+                            <span
+                              className={
+                                selectedHistoryItem.status === "APPROVED"
+                                  ? "text-emerald-600 font-semibold"
+                                  : "text-rose-600 font-semibold"
+                              }
+                            >
+                              {selectedHistoryItem.status}
+                            </span>{" "}
+                            by {selectedHistoryItem.adminActionBy?.name || "Admin"} on{" "}
+                            {format(
+                              new Date(selectedHistoryItem.adminActionAt),
+                              "dd MMM yyyy, hh:mm a"
+                            )}
+                          </div>
+                          {selectedHistoryItem.adminRemarks && (
+                            <div className="text-xs bg-muted/30 p-2 rounded mt-1 text-muted-foreground">
+                              Admin Remarks: "{selectedHistoryItem.adminRemarks}"
+                            </div>
+                          )}
+                        </div>
+                      ) : selectedHistoryItem.status === "PENDING_ADMIN" ? (
+                        <div className="text-[11px] text-blue-600">
+                          Awaiting Admin Review & Final Approval
+                        </div>
+                      ) : (
+                        <div className="text-[11px] text-muted-foreground">
+                          Not reached / waiting for Stage 1.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Step 4: Payment */}
+                  <div className="relative">
+                    <div
+                      className={`absolute -left-6 top-0.5 h-5 w-5 rounded-full flex items-center justify-center border ${
+                        selectedHistoryItem.paymentStatus === "PAID"
+                          ? "bg-emerald-500/20 border-emerald-500 text-emerald-600"
+                          : "bg-muted border-muted-foreground/40 text-muted-foreground"
+                      }`}
+                    >
+                      <CreditCard className="h-3 w-3" />
+                    </div>
+                    <div>
+                      <div className="font-semibold text-xs text-foreground">
+                        Stage 3: Payout Status
+                      </div>
+                      {selectedHistoryItem.paymentStatus === "PAID" ? (
+                        <div className="text-[11px] text-emerald-600 font-medium">
+                          Paid on{" "}
+                          {selectedHistoryItem.paidAt
+                            ? format(new Date(selectedHistoryItem.paidAt), "dd MMM yyyy")
+                            : "Completed"}
+                        </div>
+                      ) : (
+                        <div className="text-[11px] text-muted-foreground">
+                          Unpaid (will be paid following approval)
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <DialogFooter>
+                  <Button size="sm" onClick={() => setSelectedHistoryItem(null)}>
+                    Close
+                  </Button>
+                </DialogFooter>
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
+
+        {/* ======================================================== */}
+        {/* MODAL: MARK AS PAID CONFIRMATION (Admin only)            */}
+        {/* ======================================================== */}
+        {isAdmin && (
+          <Dialog
+            open={Boolean(markingPaidItem)}
+            onOpenChange={(open) => {
+              if (!open) setMarkingPaidItem(null);
+            }}
+          >
+            <DialogContent className="sm:max-w-[420px]">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <CreditCard className="h-5 w-5 text-emerald-600" />
+                  Mark Reimbursement as Paid
+                </DialogTitle>
+                <DialogDescription className="text-xs">
+                  Confirm that this reimbursement amount has been disbursed to the employee.
+                </DialogDescription>
+              </DialogHeader>
+
+              {markingPaidItem && (
+                <div className="space-y-4 pt-2">
+                  <div className="bg-muted/40 p-3 rounded text-xs space-y-1">
+                    <div>
+                      <span className="text-muted-foreground">Employee: </span>
+                      <span className="font-semibold text-foreground">
+                        {markingPaidItem.employee?.fullName || "Employee"}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Amount to Disburse: </span>
+                      <span className="font-bold text-emerald-600 text-sm">
+                        {formatCurrency(markingPaidItem.amount)}
+                      </span>
+                    </div>
+                  </div>
+
+                  <DialogFooter>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setMarkingPaidItem(null)}
+                      disabled={isMarkingPaid}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      size="sm"
+                      className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold"
+                      onClick={handleMarkAsPaidSubmit}
+                      disabled={isMarkingPaid}
+                    >
+                      {isMarkingPaid ? (
+                        <>
+                          <RefreshCw className="h-3.5 w-3.5 animate-spin mr-1.5" /> Processing...
+                        </>
+                      ) : (
+                        "Confirm Payout"
+                      )}
+                    </Button>
+                  </DialogFooter>
+                </div>
+              )}
+            </DialogContent>
+          </Dialog>
+        )}
+
+        {/* ======================================================== */}
+        {/* MODAL: ATTACHMENT VIEWER                                 */}
+        {/* ======================================================== */}
+        <Dialog
+          open={Boolean(viewingAttachment)}
+          onOpenChange={(open) => {
+            if (!open) handleCloseAttachment();
+          }}
+        >
+          <DialogContent className="sm:max-w-[750px] max-h-[90vh] flex flex-col">
+            <DialogHeader className="border-b pb-3">
+              <DialogTitle className="text-sm font-semibold flex items-center justify-between">
+                <span className="truncate max-w-[500px]">
+                  {viewingAttachment?.name || "Receipt Attachment"}
+                </span>
+              </DialogTitle>
+              <DialogDescription className="sr-only">Receipt attachment preview</DialogDescription>
+            </DialogHeader>
+
+            <div className="flex-1 overflow-auto p-2 min-h-[350px] flex items-center justify-center bg-muted/20">
+              {viewingAttachment?.isLoading ? (
+                <div className="text-center text-muted-foreground">
+                  <RefreshCw className="h-8 w-8 animate-spin mx-auto mb-2 text-primary" />
+                  Loading receipt document preview...
+                </div>
+              ) : viewingAttachment?.error ? (
+                <div className="text-center text-destructive p-4">
+                  <AlertCircle className="h-8 w-8 mx-auto mb-2" />
+                  <p className="text-xs font-semibold">{viewingAttachment.error}</p>
+                </div>
+              ) : viewingAttachment?.blobUrl ? (
+                viewingAttachment.mimeType?.includes("pdf") ? (
+                  <iframe
+                    src={viewingAttachment.blobUrl}
+                    className="w-full h-[500px] rounded border"
+                    title="PDF Attachment Viewer"
+                  />
+                ) : (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={viewingAttachment.blobUrl}
+                    alt="Receipt Preview"
+                    className="max-h-[500px] max-w-full rounded object-contain"
+                  />
+                )
+              ) : null}
+            </div>
+
+            <DialogFooter className="border-t pt-3 flex justify-between">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  if (viewingAttachment) {
+                    const item =
+                      myReimbursements.find((r) => r.id === viewingAttachment.id) ||
+                      managerQueue.find((r) => r.id === viewingAttachment.id) ||
+                      adminQueue.find((r) => r.id === viewingAttachment.id);
+                    if (item) handleDownloadAttachment(item);
+                  }
+                }}
+                className="text-xs gap-1"
+              >
+                <Download className="h-3.5 w-3.5" /> Download
+              </Button>
+              <Button size="sm" onClick={handleCloseAttachment} className="text-xs">
+                Close Preview
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* ======================================================== */}
+        {/* MODAL: DELETE CONFIRMATION                               */}
+        {/* ======================================================== */}
+        <Dialog open={Boolean(deletingId)} onOpenChange={(open) => !open && setDeletingId(null)}>
+          <DialogContent className="sm:max-w-[400px]">
+            <DialogHeader>
+              <DialogTitle className="text-base text-destructive flex items-center gap-2">
+                <Trash2 className="h-5 w-5" />
+                Delete Reimbursement Claim
+              </DialogTitle>
+              <DialogDescription className="text-xs">
+                Are you sure you want to delete this pending reimbursement request? This action
+                cannot be undone.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter className="pt-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setDeletingId(null)}
+                disabled={isDeleting}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={handleDelete}
+                disabled={isDeleting}
+                className="font-semibold"
+              >
+                {isDeleting ? "Deleting..." : "Delete Claim"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </div>
+    </>
+  );
+}

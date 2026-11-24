@@ -9,9 +9,13 @@ import { STATUSES, STATUS_LABEL, STATUS_COLOR, type AppStatus } from '@/lib/cons
 import { CompanyLogo, MatchBadge, StatusBadge } from '@/components/ui/Bits';
 import { Skeleton } from '@/components/ui/Skeleton';
 import EmptyState from '@/components/ui/EmptyState';
+import InterviewsTab, { type InterviewItem } from './InterviewsTab';
+import MessagesTab from './MessagesTab';
 
 interface Detail {
   id: string; status: AppStatus; appliedAt?: string | null; followUpAt?: string | null; createdAt: string; salaryExpected?: number | null;
+  recruiterName?: string | null; recruiterEmail?: string | null; recruiterPhone?: string | null; recruiterLinkedin?: string | null;
+  jobDescriptionSnapshot?: string | null;
   job: {
     id: string; title: string; companyName: string; location?: string | null; description?: string | null; requirements?: string | null;
     skills: string[]; applyUrl?: string | null; workMode?: string | null; salaryMin?: number | null; salaryMax?: number | null; salaryCurrency?: string;
@@ -21,10 +25,10 @@ interface Detail {
   statusHistory: Array<{ id: string; fromStatus: AppStatus | null; toStatus: AppStatus; changedAt: string; notes?: string | null }>;
   noteEntries: Array<{ id: string; content: string; createdAt: string; updatedAt: string }>;
   coverLetters: Array<{ id: string; title: string; content: string; createdAt: string }>;
-  interviews: Array<{ id: string; type: string; status: string; scheduledAt?: string | null }>;
+  interviews: InterviewItem[];
 }
 
-const TABS = ['Overview', 'Timeline', 'Notes', 'Interview prep', 'Documents'] as const;
+const TABS = ['Overview', 'Interviews', 'Messages', 'Timeline', 'Notes', 'Interview prep', 'Documents'] as const;
 type Tab = (typeof TABS)[number];
 
 export default function ApplicationDrawerContent({ id, onClose }: { id: string; onClose: () => void }) {
@@ -90,6 +94,10 @@ export default function ApplicationDrawerContent({ id, onClose }: { id: string; 
               <Info label="Work mode" value={app.job.workMode ? formatStatus(app.job.workMode) : '—'} />
               <Info label="Salary range" value={formatSalary(app.job.salaryMin, app.job.salaryMax, app.job.salaryCurrency) || '—'} />
               <Info label="Resume used" value={app.resume?.name ?? '—'} />
+              <Info label="Next interview" value={(() => {
+                const next = app.interviews.filter(i => i.status === 'SCHEDULED' && i.scheduledAt && new Date(i.scheduledAt) > new Date()).sort((a, b) => a.scheduledAt!.localeCompare(b.scheduledAt!))[0];
+                return next ? formatDate(next.scheduledAt!) : '—';
+              })()} />
             </div>
 
             <div>
@@ -98,7 +106,14 @@ export default function ApplicationDrawerContent({ id, onClose }: { id: string; 
                 <input id="followup" type="date" className="input" value={app.followUpAt ? app.followUpAt.slice(0, 10) : ''} onChange={e => setFollowUp.mutate(e.target.value || null)} />
                 {app.followUpAt && <button className="btn-secondary" onClick={() => setFollowUp.mutate(null)}>Clear</button>}
               </div>
+              <div className="flex gap-2 mt-2">
+                {[3, 7, 14].map(d => (
+                  <button key={d} type="button" className="btn-ghost text-xs" onClick={() => setFollowUp.mutate(new Date(Date.now() + d * 86_400_000).toISOString().slice(0, 10))}>In {d} days</button>
+                ))}
+              </div>
             </div>
+
+            <RecruiterContact app={app} onSaved={refresh} />
 
             {app.job.skills.length > 0 && (
               <div>
@@ -115,7 +130,7 @@ export default function ApplicationDrawerContent({ id, onClose }: { id: string; 
             <div>
               <p className="label">Job description</p>
               <p className="text-sm whitespace-pre-wrap max-h-64 overflow-y-auto" style={{ color: 'var(--fg-secondary)' }}>
-                {app.job.description || 'No description saved for this job.'}
+                {app.job.description || app.jobDescriptionSnapshot || 'No description saved for this job.'}
               </p>
             </div>
             {app.job.applyUrl && <a href={app.job.applyUrl} target="_blank" rel="noopener noreferrer" className="btn-secondary w-fit"><ExternalLink size={14} /> Open job posting</a>}
@@ -140,6 +155,8 @@ export default function ApplicationDrawerContent({ id, onClose }: { id: string; 
           ) : <EmptyState compact title="No status changes yet" />
         )}
 
+        {tab === 'Interviews' && <InterviewsTab appId={id} interviews={app.interviews} onChange={refresh} />}
+        {tab === 'Messages' && <MessagesTab appId={id} />}
         {tab === 'Notes' && <Notes appId={id} notes={app.noteEntries} onChange={refresh} />}
         {tab === 'Interview prep' && <InterviewPrep jobId={app.job.id} />}
 
@@ -214,7 +231,7 @@ function Notes({ appId, notes, onChange }: { appId: string; notes: Detail['noteE
                     <span className="text-xs" style={{ color: 'var(--fg-muted)' }}>{formatDate(n.createdAt, 'd MMM, h:mm a')}{n.updatedAt !== n.createdAt ? ' · edited' : ''}</span>
                     <span className="flex gap-1">
                       <button className="btn-ghost p-1" aria-label="Edit note" onClick={() => { setEditing(n.id); setEditText(n.content); }}><Pencil size={13} /></button>
-                      <button className="btn-ghost p-1" aria-label="Delete note" style={{ color: '#F87171' }} onClick={() => del.mutate(n.id)}><Trash2 size={13} /></button>
+                      <button className="btn-ghost p-1" aria-label="Delete note" style={{ color: 'var(--tone-red)' }} onClick={() => del.mutate(n.id)}><Trash2 size={13} /></button>
                     </span>
                   </div>
                 </>
@@ -273,5 +290,47 @@ function CoverLetterItem({ title, content, date }: { title: string; content: str
         </button>
       </div>
     </details>
+  );
+}
+
+/** Recruiter or hiring-manager contact for this application, edited in place. */
+function RecruiterContact({ app, onSaved }: { app: Detail; onSaved: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState({ recruiterName: app.recruiterName ?? '', recruiterEmail: app.recruiterEmail ?? '', recruiterPhone: app.recruiterPhone ?? '', recruiterLinkedin: app.recruiterLinkedin ?? '' });
+  const save = useMutation({
+    mutationFn: () => api.put(`/applications/${app.id}`, Object.fromEntries(Object.entries(form).map(([k, v]) => [k, v.trim() || null]))),
+    onSuccess: () => { toast.success('Contact saved'); setEditing(false); onSaved(); },
+    onError: e => toast.error(apiError(e, 'Could not save the contact')),
+  });
+  const has = app.recruiterName || app.recruiterEmail || app.recruiterPhone || app.recruiterLinkedin;
+  if (!editing) {
+    return (
+      <div>
+        <div className="flex items-center justify-between"><p className="label">Recruiter contact</p><button type="button" className="btn-ghost text-xs" onClick={() => setEditing(true)}>{has ? 'Edit' : 'Add'}</button></div>
+        {has ? (
+          <div className="text-sm space-y-0.5" style={{ color: 'var(--fg-secondary)' }}>
+            {app.recruiterName && <p style={{ color: 'var(--fg-primary)' }}>{app.recruiterName}</p>}
+            {app.recruiterEmail && <p><a className="underline" href={`mailto:${app.recruiterEmail}`}>{app.recruiterEmail}</a></p>}
+            {app.recruiterPhone && <p>{app.recruiterPhone}</p>}
+            {app.recruiterLinkedin && <p><a className="underline" href={app.recruiterLinkedin} target="_blank" rel="noopener noreferrer">LinkedIn profile</a></p>}
+          </div>
+        ) : <p className="text-sm" style={{ color: 'var(--fg-muted)' }}>No contact yet. Adding one makes follow-ups easier.</p>}
+      </div>
+    );
+  }
+  const field = (k: keyof typeof form, label: string, type = 'text') => (
+    <div>
+      <label className="label" htmlFor={`rc-${k}`}>{label}</label>
+      <input id={`rc-${k}`} type={type} className="input" value={form[k]} onChange={e => setForm(f => ({ ...f, [k]: e.target.value }))} />
+    </div>
+  );
+  return (
+    <form className="space-y-2" onSubmit={e => { e.preventDefault(); save.mutate(); }}>
+      <p className="label">Recruiter contact</p>
+      <div className="grid sm:grid-cols-2 gap-2">
+        {field('recruiterName', 'Name')}{field('recruiterEmail', 'Email', 'email')}{field('recruiterPhone', 'Phone', 'tel')}{field('recruiterLinkedin', 'LinkedIn URL', 'url')}
+      </div>
+      <div className="flex gap-2"><button className="btn-primary text-sm" disabled={save.isPending}>Save</button><button type="button" className="btn-secondary text-sm" onClick={() => setEditing(false)}>Cancel</button></div>
+    </form>
   );
 }

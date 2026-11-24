@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { applicationsController as c } from './applications.controller';
 import { authenticate } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
+import { createInterviewSchema } from '../interviews/interviews.schema';
 import { createApplicationSchema, updateApplicationSchema, bulkSchema, noteSchema } from './applications.schema';
 
 const router = Router();
@@ -19,6 +20,6 @@ router.get('/:id/history', c.getStatusHistory);
 router.post('/:id/notes', validate(noteSchema), c.addNote);
 router.put('/:id/notes/:noteId', validate(noteSchema), c.updateNote);
 router.delete('/:id/notes/:noteId', c.deleteNote);
-router.post('/:id/interviews', c.addInterview);
+router.post('/:id/interviews', validate(createInterviewSchema), c.addInterview);
 
 export default router;

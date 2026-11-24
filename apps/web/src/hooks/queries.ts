@@ -31,6 +31,13 @@ export interface Settings {
   emailApplicationUpdates?: boolean;
   emailInterviewReminders?: boolean;
   emailWeeklySummary?: boolean;
+  inAppJobAlerts?: boolean;
+  jobAlertMinMatchScore?: number;
+  automationPaused?: boolean;
+  dailySummary?: boolean;
+  emailDailySummary?: boolean;
+  weeklyReport?: boolean;
+  resumeNudges?: boolean;
 }
 
 export const useSettings = () =>

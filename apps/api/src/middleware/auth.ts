@@ -63,6 +63,6 @@ export const requireRole = (...roles: string[]) =>
 function extractToken(req: Request): string | null {
   const authHeader = req.headers.authorization;
   if (authHeader?.startsWith('Bearer ')) return authHeader.slice(7);
-  if (req.cookies?.accessToken) return req.cookies.accessToken as string;
+  // Deliberately no cookie fallback: header-only auth means other sites can't ride a session (CSRF)
   return null;
 }

@@ -106,7 +106,7 @@ export default function OnboardingPage() {
       <div className="w-full max-w-xl">
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-lg flex items-center justify-center" style={{ background: 'var(--accent)' }}><Zap size={18} className="text-white" /></div>
+            <div className="w-9 h-9 rounded-lg flex items-center justify-center" style={{ background: 'var(--accent)' }}><Zap size={18} className="text-on-accent" /></div>
             <span className="font-display font-bold text-xl" style={{ color: 'var(--fg-primary)' }}>CareerOS</span>
           </div>
           <button onClick={skipAll} className="text-sm" style={{ color: 'var(--fg-muted)' }}>Skip for now</button>
@@ -163,13 +163,13 @@ export default function OnboardingPage() {
                     style={{ border: `2px dashed ${drag ? 'var(--accent)' : 'var(--border-accent)'}`, background: drag ? 'var(--accent-dim)' : 'transparent' }}
                   >
                     {uploading || parsing ? <Loader2 size={30} className="mx-auto animate-spin" style={{ color: 'var(--accent)' }} />
-                      : fileName ? <CheckCircle2 size={30} className="mx-auto" style={{ color: '#34D399' }} />
+                      : fileName ? <CheckCircle2 size={30} className="mx-auto" style={{ color: 'var(--tone-green)' }} />
                       : <Upload size={30} className="mx-auto" style={{ color: 'var(--accent)' }} />}
                     <p className="mt-3 font-medium" style={{ color: 'var(--fg-primary)' }}>
                       {uploading ? 'Uploading…' : parsing ? 'Reading your resume with AI…' : fileName ?? 'Drag & drop your resume here'}
                     </p>
                     <p className="text-xs mt-1" style={{ color: 'var(--fg-muted)' }}>{fileName ? 'Click to replace' : 'PDF or DOCX, up to 10 MB'}</p>
-                    <input ref={fileRef} type="file" accept=".pdf,.doc,.docx" className="hidden" onChange={e => handleFile(e.target.files?.[0])} />
+                    <input ref={fileRef} type="file" accept=".pdf,.docx" className="hidden" onChange={e => handleFile(e.target.files?.[0])} />
                   </div>
                   {parsed && (
                     <div className="rounded-lg p-3 text-sm" style={{ background: 'var(--bg-secondary)' }}>
@@ -184,7 +184,7 @@ export default function OnboardingPage() {
 
               {step === 2 && (
                 <div className="space-y-3 mt-4">
-                  <p className="text-sm" style={{ color: 'var(--fg-secondary)' }}>Choose where CareerOS should look for jobs. Only sources marked <em>Live</em> fetch jobs today; the rest are saved as interest so we can enable them as access becomes available.</p>
+                  <p className="text-sm" style={{ color: 'var(--fg-secondary)' }}>Choose where CareerOS should look for jobs. You can change this, add company boards and turn on automatic fetching later in Settings → Job sources.</p>
                   {JOB_SOURCES.map(s => {
                     const on = sources.includes(s.id);
                     return (
@@ -194,7 +194,6 @@ export default function OnboardingPage() {
                           <p className="text-sm font-medium" style={{ color: 'var(--fg-primary)' }}>{s.label}</p>
                           <p className="text-xs" style={{ color: 'var(--fg-muted)' }}>{s.note}</p>
                         </div>
-                        <span className={`badge ${s.available ? 'badge-green' : 'badge-muted'}`}>{s.available ? 'Live' : 'Coming soon'}</span>
                       </label>
                     );
                   })}

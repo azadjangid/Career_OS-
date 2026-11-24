@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Lint, typecheck, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: careeros
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: careeros_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U careeros -d careeros_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://careeros:password@localhost:5432/careeros_test
+      TEST_DATABASE_URL: postgresql://careeros:password@localhost:5432/careeros_test
+      E2E_DATABASE_URL: postgresql://careeros:password@localhost:5432/careeros_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run db:generate
+      - name: Check migrations match the schema
+        run: |
+          npx prisma migrate deploy --schema=prisma/schema.prisma
+          npx prisma migrate diff --from-schema-datasource prisma/schema.prisma --to-schema-datamodel prisma/schema.prisma --exit-code
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Seed runs cleanly
+        run: npm run db:seed
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+      - name: End-to-end smoke test
+        run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report
+          retention-days: 7
+
+  docker:
+    name: Docker images build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

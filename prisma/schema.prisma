@@ -4,7 +4,9 @@
 // =============================================
 
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  // native = your machine; linux-musl-openssl-3.0.x = the Alpine Docker images
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
 }
 
 datasource db {
@@ -23,6 +25,7 @@ enum ApplicationStatus {
   SAVED
   READY_TO_APPLY
   APPLIED
+  ASSESSMENT
   SCREENING
   INTERVIEW
   TECHNICAL_ROUND
@@ -165,12 +168,16 @@ model User {
   preferences          UserPreference?
   refreshTokens        RefreshToken[]
   passwordResets       PasswordReset[]
+  emailVerifications   EmailVerification[]
   auditLogs            AuditLog[]
+  mockInterviews       MockInterview[]
+  learningGoals        LearningGoal[]
 
   @@index([email])
   @@map("users")
 }
 
+/// `token` holds the SHA-256 hash of the refresh token, never the token itself
 model RefreshToken {
   id        String   @id @default(cuid())
   token     String   @unique
@@ -184,6 +191,7 @@ model RefreshToken {
   @@map("refresh_tokens")
 }
 
+/// `token` holds the SHA-256 hash of the emailed reset token
 model PasswordReset {
   id        String   @id @default(cuid())
   token     String   @unique
@@ -195,6 +203,19 @@ model PasswordReset {
 
   @@index([token])
   @@map("password_resets")
+}
+
+/// One-time email confirmation links; only the SHA-256 hash of the token is stored
+model EmailVerification {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("email_verifications")
 }
 
 // ── PROFILE ───────────────────────────────────────────────────────────────
@@ -355,6 +376,15 @@ model ResumeVersion {
   fileUrl   String?
   storageKey String?
   changes   String?
+  /// Short name shown in the history, e.g. "Original upload" or "AI-improved for Frontend roles"
+  label     String?
+  /// Full plain text of this version (the resume record always holds the current one)
+  text      String?
+  /// upload | ai_improved | manual | restore
+  source    String   @default("upload")
+  atsScore  Int?
+  /// Per-change explanations for AI-improved versions
+  explanations Json?
   createdAt DateTime @default(now())
 
   resume    Resume   @relation(fields: [resumeId], references: [id], onDelete: Cascade)
@@ -434,6 +464,14 @@ model Job {
   expiresAt        DateTime?
   isActive         Boolean         @default(true)
   isDemo           Boolean         @default(false)
+  /// Human-readable origin, e.g. "Remotive", "Greenhouse: razorpay", "Manual"
+  sourceName       String?
+  /// Remote job open to candidates based in India (null = unknown)
+  indiaEligible    Boolean?
+  /// normalized company + title, used to spot the same posting arriving from several sources
+  dedupeKey        String?
+  /// Set when this posting duplicates another job of the same user
+  duplicateOfId    String?
   fetchedAt        DateTime        @default(now())
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
@@ -449,6 +487,7 @@ model Job {
 
   @@unique([userId, externalId, sourceId])
   @@index([userId])
+  @@index([userId, dedupeKey])
   @@index([companyName])
   @@index([postedAt])
   @@map("jobs")
@@ -497,6 +536,12 @@ model Application {
   source          String?
   rejectionReason String?
   offerDetails    Json?
+  recruiterName     String?
+  recruiterEmail    String?
+  recruiterPhone    String?
+  recruiterLinkedin String?
+  /// Job description as it was when the user applied (postings get edited or removed)
+  jobDescriptionSnapshot String?
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
 
@@ -507,6 +552,7 @@ model Application {
   interviews      Interview[]
   coverLetters    CoverLetter[]
   noteEntries     ApplicationNote[]
+  recruiterMessages RecruiterMessage[]
 
   @@unique([userId, jobId])
   @@index([userId])
@@ -639,6 +685,7 @@ model CoverLetter {
 model RecruiterMessage {
   id          String   @id @default(cuid())
   userId      String
+  applicationId String?
   type        String   @default("linkedin")
   company     String?
   role        String?
@@ -651,8 +698,10 @@ model RecruiterMessage {
   updatedAt   DateTime @updatedAt
 
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  application Application? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
 
   @@index([userId])
+  @@index([applicationId])
   @@map("recruiter_messages")
 }
 
@@ -676,10 +725,17 @@ model SavedJob {
 model JobSearch {
   id          String   @id @default(cuid())
   userId      String
+  /// Set for searches the user saved; unnamed rows are plain search history
+  name        String?
   query       String
   filters     Json?
   resultCount Int      @default(0)
+  /// Notify about new matching jobs (checked by the worker)
+  alertEnabled Boolean @default(false)
+  lastRunAt   DateTime?
+  lastNotifiedAt DateTime?
   createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
 
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -757,6 +813,12 @@ model AIUsage {
   outputTokens Int     @default(0)
   totalTokens Int      @default(0)
   cost        Float    @default(0)
+  /// anthropic | nvidia; null on rows written before provider tracking
+  provider    String?
+  /// false for calls that failed (tokens are 0); errorCode says why
+  success     Boolean  @default(true)
+  errorCode   String?
+  latencyMs   Int?
   createdAt   DateTime @default(now())
 
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -802,6 +864,15 @@ model UserPreference {
   inAppJobAlerts         Boolean  @default(true)
   inAppApplicationUpdates Boolean @default(true)
   jobAlertMinMatchScore  Int      @default(70)
+  /// Stops every scheduled notification, email and automatic job fetch until turned back on
+  automationPaused       Boolean  @default(false)
+  /// Morning in-app summary of new jobs, strong matches, follow-ups and interviews
+  dailySummary           Boolean  @default(true)
+  emailDailySummary      Boolean  @default(false)
+  /// Monday in-app progress report (email copy follows emailWeeklySummary)
+  weeklyReport           Boolean  @default(true)
+  /// Occasional tips to improve a low-scoring or outdated resume
+  resumeNudges           Boolean  @default(true)
   theme                  String   @default("dark")
   language               String   @default("en")
   timezone               String   @default("Asia/Kolkata")
@@ -835,4 +906,57 @@ model AuditLog {
   @@index([action])
   @@index([createdAt])
   @@map("audit_logs")
+}
+
+// ── INTERVIEW PREP (standalone mock interviews) ───────────────────────────
+
+model MockInterview {
+  id             String    @id @default(cuid())
+  userId         String
+  /// hr | javascript | typescript | react | frontend | coding | role (questions written for a target job)
+  topic          String
+  level          ExperienceLevel @default(MID)
+  jobId          String?
+  targetRole     String?
+  /// [{ id, question, category, difficulty, source: bank|ai, keyPoints[], answer?, feedback?, score?, selfRating? }]
+  questions      Json      @default("[]")
+  /// IN_PROGRESS | COMPLETED
+  status         String    @default("IN_PROGRESS")
+  overallScore   Int?
+  /// { strengths[], focusAreas[], answered, graded }
+  summary        Json?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  completedAt    DateTime?
+
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("mock_interviews")
+}
+
+// ── LEARNING ──────────────────────────────────────────────────────────────
+
+model LearningGoal {
+  id          String    @id @default(cuid())
+  userId      String
+  skill       String
+  title       String
+  /// path (built-in) | ai (AI roadmap) | gap (from a skill gap) | manual
+  source      String    @default("manual")
+  pathId      String?
+  targetDate  DateTime?
+  /// ACTIVE | DONE | PAUSED
+  status      String    @default("ACTIVE")
+  /// [{ id, title, kind: learn|practice|project, resource?: { label, url }, done }]
+  steps       Json      @default("[]")
+  progress    Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  completedAt DateTime?
+
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@map("learning_goals")
 }

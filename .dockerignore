@@ -1,0 +1,15 @@
+**/node_modules
+**/dist
+**/.env
+**/.env.*
+!**/.env.example
+uploads
+apps/api/uploads
+backups
+playwright-report
+test-results
+coverage
+.git
+*.log
+*.pdf
+*.docx

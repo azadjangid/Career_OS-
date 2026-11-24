@@ -3,16 +3,18 @@ import { ApplicationStatus } from '@prisma/client';
 import { AuthRequest } from '../../middleware/auth';
 import { prisma } from '../../config/database';
 import { env } from '../../config/env';
-import { userSkillSet } from '../../lib/match';
+import { AppError } from '../../middleware/errorHandler';
+import { quickMatch, userSkillSet } from '../../lib/match';
+import { topSkills } from '../../lib/atsScore';
 
 const uid = (req: AuthRequest) => req.user!.id;
 const DAY = 86_400_000;
 
 /** Statuses meaning an employer has replied (anything past "applied", excluding self-withdrawn). */
-const RESPONDED: ApplicationStatus[] = ['SCREENING', 'INTERVIEW', 'TECHNICAL_ROUND', 'FINAL_ROUND', 'OFFER', 'REJECTED'];
+const RESPONDED: ApplicationStatus[] = ['ASSESSMENT', 'SCREENING', 'INTERVIEW', 'TECHNICAL_ROUND', 'FINAL_ROUND', 'OFFER', 'REJECTED'];
 const INTERVIEWING: ApplicationStatus[] = ['INTERVIEW', 'TECHNICAL_ROUND', 'FINAL_ROUND', 'OFFER'];
-const SUBMITTED: ApplicationStatus[] = ['APPLIED', 'SCREENING', 'INTERVIEW', 'TECHNICAL_ROUND', 'FINAL_ROUND', 'OFFER', 'REJECTED', 'WITHDRAWN'];
-const ACTIVE: ApplicationStatus[] = ['APPLIED', 'SCREENING', 'INTERVIEW', 'TECHNICAL_ROUND', 'FINAL_ROUND'];
+const SUBMITTED: ApplicationStatus[] = ['APPLIED', 'ASSESSMENT', 'SCREENING', 'INTERVIEW', 'TECHNICAL_ROUND', 'FINAL_ROUND', 'OFFER', 'REJECTED', 'WITHDRAWN'];
+const ACTIVE: ApplicationStatus[] = ['APPLIED', 'ASSESSMENT', 'SCREENING', 'INTERVIEW', 'TECHNICAL_ROUND', 'FINAL_ROUND'];
 
 const weekStart = (d: Date) => {
   const x = new Date(d);
@@ -51,8 +53,8 @@ export const analyticsController = {
     try {
       const userId = uid(req);
       const now = Date.now();
-      const [totalJobs, apps, resumes, matches, savedJobsWithoutMatch, completeness, profile] = await Promise.all([
-        prisma.job.count({ where: { userId } }),
+      const [totalJobs, apps, resumes, matches, savedJobsWithoutMatch, completeness, profile, upcoming, history, recentJobs, skills, searches] = await Promise.all([
+        prisma.job.count({ where: { userId, duplicateOfId: null } }),
         prisma.application.findMany({
           where: { userId },
           select: {
@@ -61,11 +63,36 @@ export const analyticsController = {
           },
           orderBy: { updatedAt: 'desc' },
         }),
-        prisma.resume.findMany({ where: { userId }, select: { atsScore: true } }),
+        prisma.resume.findMany({ where: { userId }, select: { id: true, name: true, atsScore: true, isDefault: true } }),
         prisma.jobMatch.aggregate({ where: { userId }, _avg: { overallScore: true }, _count: { id: true } }),
         prisma.savedJob.count({ where: { userId, job: { matches: { none: { userId } } } } }),
         profileCompleteness(userId),
         prisma.profile.findUnique({ where: { userId }, select: { _count: { select: { skills: true } } } }),
+        prisma.interview.findMany({
+          where: { userId, status: { in: ['SCHEDULED', 'RESCHEDULED'] }, scheduledAt: { gte: new Date(now - 2 * 3_600_000) } },
+          orderBy: { scheduledAt: 'asc' },
+          take: 5,
+          select: {
+            id: true, type: true, scheduledAt: true, meetingUrl: true, location: true, applicationId: true,
+            application: { select: { job: { select: { title: true, companyName: true } } } },
+            job: { select: { title: true, companyName: true } },
+          },
+        }),
+        prisma.applicationStatusHistory.findMany({
+          where: { application: { userId } },
+          orderBy: { changedAt: 'desc' },
+          take: 8,
+          select: { id: true, fromStatus: true, toStatus: true, changedAt: true, applicationId: true, application: { select: { job: { select: { title: true, companyName: true } } } } },
+        }),
+        // Jobs from the last 30 days drive the market insights and recommendations
+        prisma.job.findMany({
+          where: { userId, isActive: true, duplicateOfId: null, isDemo: false, createdAt: { gte: new Date(now - 30 * DAY) } },
+          select: { id: true, title: true, companyName: true, skills: true, workMode: true, indiaEligible: true, applications: { where: { userId }, select: { id: true } } },
+          orderBy: { createdAt: 'desc' },
+          take: 500,
+        }),
+        userSkillSet(userId),
+        prisma.jobSearch.count({ where: { userId, name: { not: null }, alertEnabled: true } }),
       ]);
 
       const byStatus = Object.entries(
@@ -100,10 +127,73 @@ export const analyticsController = {
           : { id: 'ai', title: 'Ask the AI agent for this week’s plan', progress: 0, target: 1, link: '/ai' },
       ];
 
+      // ── Command-center extras (all from the user's own records) ──
+      const interviewing = apps.filter(a => INTERVIEWING.includes(a.status) && a.status !== 'OFFER').length;
+      const offers = apps.filter(a => a.status === 'OFFER').length;
+      const rejections = apps.filter(a => a.status === 'REJECTED').length;
+
+      const weekly = Array.from({ length: 8 }, (_, i) => {
+        const start = weekStart(new Date(now - (7 - i) * 7 * DAY));
+        return { week: iso(start), applications: 0, responses: 0 };
+      });
+      const months = Array.from({ length: 6 }, (_, i) => {
+        const d = new Date(now);
+        d.setDate(1);
+        d.setMonth(d.getMonth() - (5 - i));
+        return { month: iso(d).slice(0, 7), applications: 0, interviews: 0, offers: 0 };
+      });
+      for (const a of apps) {
+        if (!SUBMITTED.includes(a.status)) continue;
+        const t = a.appliedAt ?? a.createdAt;
+        const w = weekly.find(x => x.week === iso(weekStart(t)));
+        if (w) { w.applications++; if (RESPONDED.includes(a.status)) w.responses++; }
+        const m = months.find(x => x.month === iso(t).slice(0, 7));
+        if (m) { m.applications++; if (INTERVIEWING.includes(a.status)) m.interviews++; if (a.status === 'OFFER') m.offers++; }
+      }
+
+      const market = topSkills(recentJobs, 10).map(t => ({ ...t, youHave: skills.has(t.skill.trim().toLowerCase().replace(/\.js$/, '').replace(/[^a-z0-9+#]/g, '')) }));
+      const remoteJobs = recentJobs.filter(j => j.workMode === 'REMOTE');
+      const marketInsights = {
+        jobs: recentJobs.length,
+        topSkills: market,
+        remoteShare: pct(remoteJobs.length, recentJobs.length),
+        indiaEligibleRemote: remoteJobs.filter(j => j.indiaEligible === true).length,
+      };
+
+      const defaultResume = resumes.find(r => r.isDefault) ?? resumes[0];
+      const bestFits = recentJobs
+        .filter(j => !j.applications.length && j.skills.length >= 3)
+        .map(j => ({ id: j.id, title: j.title, companyName: j.companyName, score: quickMatch(j.skills, skills).score }))
+        .filter(j => j.score >= 60)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 3);
+      const missingTop = market.filter(m => !m.youHave && m.count >= 2).slice(0, 3).map(m => m.skill);
+      const recommendations: Array<{ id: string; title: string; detail: string; link: string }> = [];
+      if (!resumes.length) recommendations.push({ id: 'upload', title: 'Upload your resume', detail: 'Matching, ATS checks and tailoring all start from your resume.', link: '/resumes' });
+      else if ((defaultResume?.atsScore ?? 0) < 70) recommendations.push({ id: 'ats', title: `Raise your ATS score${defaultResume?.atsScore != null ? ` from ${defaultResume.atsScore}` : ''}`, detail: 'Open the resume analysis to see which checks fail, or create an AI-improved version.', link: '/resumes' });
+      if (bestFits.length) recommendations.push({ id: 'fits', title: `Apply to ${bestFits.length} strong match${bestFits.length === 1 ? '' : 'es'}`, detail: bestFits.map(j => `${j.title} at ${j.companyName} (${j.score}%)`).join(' · '), link: '/jobs' });
+      if (followUps) recommendations.push({ id: 'follow', title: `Follow up on ${followUps} application${followUps === 1 ? '' : 's'}`, detail: 'No update in over a week, or a follow-up date is due.', link: '/applications' });
+      if (missingTop.length) recommendations.push({ id: 'skills', title: `Learn or add: ${missingTop.join(', ')}`, detail: `Asked for by several of your recent jobs and missing from your profile and resume.`, link: '/profile' });
+      if (!searches && totalJobs > 0) recommendations.push({ id: 'alerts', title: 'Turn on a job alert', detail: 'Save a search on the Jobs page and get notified about new matches.', link: '/jobs' });
+
+      const activity = history.map(h => ({
+        id: h.id, applicationId: h.applicationId, at: h.changedAt, from: h.fromStatus, to: h.toStatus,
+        title: h.application.job.title, company: h.application.job.companyName,
+      }));
+
       res.json({
         success: true,
         data: {
-          kpis: { totalJobs, totalApplications: apps.length, totalResumes: resumes.length, responseRate },
+          kpis: { totalJobs, totalApplications: apps.length, totalResumes: resumes.length, responseRate, interviewing, offers, rejections, bestAts: bestAts || null, appliedThisWeek },
+          upcomingInterviews: upcoming.map(i => ({
+            id: i.id, type: i.type, scheduledAt: i.scheduledAt, meetingUrl: i.meetingUrl, location: i.location, applicationId: i.applicationId,
+            title: i.application?.job.title ?? i.job?.title ?? 'Interview', company: i.application?.job.companyName ?? i.job?.companyName ?? '',
+          })),
+          activity,
+          weekly,
+          monthly: months,
+          marketInsights,
+          recommendations: recommendations.slice(0, 5),
           applicationsByStatus: byStatus,
           recentApplications: apps.slice(0, 5).map(a => ({
             id: a.id, status: a.status, appliedAt: a.appliedAt, updatedAt: a.updatedAt,
@@ -130,12 +220,27 @@ export const analyticsController = {
   async getOverview(req: AuthRequest, res: Response, next: NextFunction) {
     try {
       const userId = uid(req);
-      const range = String((req.query as Record<string, string>)['range'] ?? '30');
-      const days = range === 'all' ? null : Math.min(parseInt(range) || 30, 365);
-      const since = days ? new Date(Date.now() - days * DAY) : null;
+      const q = req.query as Record<string, string>;
+      // A custom from/to (YYYY-MM-DD) wins over the preset range
+      const parseDay = (v?: string) => (v && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(v)) ? new Date(`${v}T00:00:00Z`) : null);
+      const fromQ = parseDay(q['from']);
+      const toQ = parseDay(q['to']);
+      if (fromQ && toQ && fromQ > toQ) throw new AppError('“From” must be before “to”', 400, 'VALIDATION_ERROR');
+      const range = fromQ || toQ ? 'custom' : String(q['range'] ?? '30');
+      const days = range === 'all' || range === 'custom' ? null : Math.min(parseInt(range) || 30, 365);
+      const since = fromQ ?? (days ? new Date(Date.now() - days * DAY) : null);
+      const until = toQ ? new Date(toQ.getTime() + DAY) : null; // inclusive end day
 
       const apps = await prisma.application.findMany({
-        where: { userId, ...(since ? { OR: [{ appliedAt: { gte: since } }, { appliedAt: null, createdAt: { gte: since } }] } : {}) },
+        where: {
+          userId,
+          ...(since || until ? {
+            OR: [
+              { appliedAt: { ...(since ? { gte: since } : {}), ...(until ? { lt: until } : {}) } },
+              { appliedAt: null, createdAt: { ...(since ? { gte: since } : {}), ...(until ? { lt: until } : {}) } },
+            ],
+          } : {}),
+        },
         select: {
           id: true, status: true, appliedAt: true, createdAt: true,
           statusHistory: { select: { toStatus: true } },
@@ -153,7 +258,8 @@ export const analyticsController = {
       // Weekly trend (applications + response rate), one point per week in range
       const firstWeek = weekStart(since ?? (apps.length ? new Date(Math.min(...apps.map(a => when(a).getTime()))) : new Date()));
       const weeks: Array<{ week: string; applications: number; responses: number; responseRate: number }> = [];
-      for (let d = new Date(firstWeek); d.getTime() <= Date.now() && weeks.length < 60; d = new Date(d.getTime() + 7 * DAY)) {
+      const lastDay = until ? until.getTime() - 1 : Date.now();
+      for (let d = new Date(firstWeek); d.getTime() <= lastDay && weeks.length < 60; d = new Date(d.getTime() + 7 * DAY)) {
         weeks.push({ week: iso(d), applications: 0, responses: 0, responseRate: 0 });
       }
       for (const a of apps) {
@@ -212,10 +318,53 @@ export const analyticsController = {
       });
       const used = usage.reduce((s, u) => s + u.totalTokens, 0);
 
+      // Discovered vs applied per week, match trend, monthly progress and interview success
+      const dateFilter = { ...(since ? { gte: since } : {}), ...(until ? { lt: until } : {}) };
+      const [discovered, matchRows] = await Promise.all([
+        prisma.job.findMany({ where: { userId, duplicateOfId: null, isDemo: false, ...(since || until ? { createdAt: dateFilter } : {}) }, select: { createdAt: true } }),
+        prisma.jobMatch.findMany({ where: { userId, ...(since || until ? { createdAt: dateFilter } : {}) }, select: { createdAt: true, overallScore: true } }),
+      ]);
+      const discovery = weeks.map(w => ({ week: w.week, discovered: 0, applied: w.applications }));
+      for (const j of discovered) {
+        const slot = discovery.find(w => w.week === iso(weekStart(j.createdAt)));
+        if (slot) slot.discovered++;
+      }
+      const matchTrend = weeks.map(w => ({ week: w.week, avgMatch: null as number | null, matches: 0 }));
+      const sums = new Map<string, number>();
+      for (const m of matchRows) {
+        const k = iso(weekStart(m.createdAt));
+        const slot = matchTrend.find(w => w.week === k);
+        if (!slot) continue;
+        slot.matches++;
+        sums.set(k, (sums.get(k) ?? 0) + m.overallScore);
+      }
+      for (const w of matchTrend) if (w.matches) w.avgMatch = Math.round(sums.get(w.week)! / w.matches);
+
+      const monthMap = new Map<string, { month: string; applications: number; interviews: number; offers: number }>();
+      for (const a of apps) {
+        if (!reached(a, SUBMITTED)) continue;
+        const k = iso(when(a)).slice(0, 7);
+        const m = monthMap.get(k) ?? { month: k, applications: 0, interviews: 0, offers: 0 };
+        m.applications++;
+        if (reached(a, INTERVIEWING) || a.interviews.length) m.interviews++;
+        if (reached(a, ['OFFER'])) m.offers++;
+        monthMap.set(k, m);
+      }
+      const monthly = [...monthMap.values()].sort((a, b) => a.month.localeCompare(b.month));
+      const rates = {
+        discoveredToApplied: pct(applied, discovered.length),
+        responseRate: pct(gotResponse, applied),
+        interviewRate: pct(interviewed, applied),
+        interviewSuccess: pct(offers, interviewed),
+        offerRate: pct(offers, applied),
+      };
+
       res.json({
         success: true,
         data: {
-          range, total: apps.length,
+          range, from: since ? iso(since) : null, to: until ? iso(new Date(until.getTime() - DAY)) : null,
+          discoveredCount: discovered.length, discovery, matchTrend, monthly, rates,
+          total: apps.length,
           responseRate: pct(gotResponse, applied),
           byStatus, weeks, funnel, topCompanies, skillsGap,
           ai: {

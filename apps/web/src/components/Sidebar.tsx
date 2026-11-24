@@ -5,7 +5,7 @@ import { useAuthStore } from '@/store/auth.store';
 import AIUsageMeter from '@/components/AIUsageMeter';
 import {
   LayoutDashboard, Briefcase, FileText, Brain, Send,
-  BarChart3, Settings, User, LogOut, Zap, X
+  BarChart3, Settings, User, LogOut, Zap, X, MessagesSquare, GraduationCap
 } from 'lucide-react';
 import { clsx } from 'clsx';
 
@@ -18,6 +18,8 @@ const NAV_ITEMS = [
   { to: '/applications', icon: Send, label: 'Applications' },
   { to: '/resumes', icon: FileText, label: 'Resumes' },
   { to: '/ai', icon: Brain, label: 'AI Assistant' },
+  { to: '/interview-prep', icon: MessagesSquare, label: 'Interview Prep' },
+  { to: '/learning', icon: GraduationCap, label: 'Learning' },
   { to: '/analytics', icon: BarChart3, label: 'Analytics' },
 ];
 
@@ -43,7 +45,7 @@ export default function Sidebar() {
       <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: 'var(--border)' }}>
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: 'var(--accent)' }}>
-            <Zap size={16} className="text-white" />
+            <Zap size={16} className="text-on-accent" />
           </div>
           <span className="font-display font-bold text-lg" style={{ color: 'var(--fg-primary)' }}>CareerOS</span>
         </div>
@@ -66,12 +68,12 @@ export default function Sidebar() {
             className={({ isActive }) => clsx(
               'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 group',
               isActive
-                ? 'text-white'
-                : 'hover:text-white'
+                ? 'text-on-accent'
+                : ''
             )}
             style={({ isActive }) => ({
               background: isActive ? 'var(--accent)' : 'transparent',
-              color: isActive ? 'white' : 'var(--fg-secondary)',
+              color: isActive ? 'var(--accent-fg)' : 'var(--fg-secondary)',
             })}
             onMouseEnter={e => {
               if (!(e.currentTarget as HTMLElement).style.background.includes('var(--accent)')) {
@@ -116,7 +118,7 @@ export default function Sidebar() {
         {/* User + Logout */}
         <div className="mt-3 pt-3 border-t" style={{ borderColor: 'var(--border)' }}>
           <div className="flex items-center gap-3 px-3 py-2">
-            <div className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold text-white" style={{ background: 'var(--accent)' }}>
+            <div className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold text-on-accent" style={{ background: 'var(--accent)' }}>
               {user?.name?.[0]?.toUpperCase() ?? 'U'}
             </div>
             <div className="flex-1 min-w-0">

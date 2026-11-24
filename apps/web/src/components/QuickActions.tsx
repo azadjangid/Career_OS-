@@ -43,7 +43,7 @@ export default function QuickActions() {
           onClick={() => setQuickMenuOpen(!quickMenuOpen)}
           aria-label={quickMenuOpen ? 'Close quick actions' : 'Open quick actions'}
           aria-expanded={quickMenuOpen}
-          className="w-14 h-14 rounded-full flex items-center justify-center text-white shadow-xl transition-transform hover:scale-105"
+          className="w-14 h-14 rounded-full flex items-center justify-center text-on-accent shadow-xl transition-transform hover:scale-105"
           style={{ background: 'var(--accent)' }}
         >
           <motion.span animate={{ rotate: quickMenuOpen ? 45 : 0 }}>{quickMenuOpen ? <X size={24} /> : <Plus size={24} />}</motion.span>
@@ -163,7 +163,7 @@ function UploadResumeModal({ open, onClose }: { open: boolean; onClose: () => vo
         {uploading ? <Loader2 size={30} className="mx-auto animate-spin" style={{ color: 'var(--accent)' }} /> : <Upload size={30} className="mx-auto" style={{ color: 'var(--accent)' }} />}
         <p className="mt-3 font-medium" style={{ color: 'var(--fg-primary)' }}>{uploading ? 'Uploading…' : 'Drag & drop or click to browse'}</p>
         <p className="text-xs mt-1" style={{ color: 'var(--fg-muted)' }}>PDF or DOCX, up to 10 MB</p>
-        <input ref={ref} type="file" accept=".pdf,.doc,.docx" className="hidden" onChange={e => handle(e.target.files?.[0])} />
+        <input ref={ref} type="file" accept=".pdf,.docx" className="hidden" onChange={e => handle(e.target.files?.[0])} />
       </div>
     </Modal>
   );

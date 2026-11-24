@@ -74,3 +74,12 @@ export function apiError(e: unknown, fallback = 'Something went wrong'): string 
   if (data?.details?.length) return data.details.map(d => d.message).join('. ');
   return data?.message ?? err.message ?? fallback;
 }
+
+/** Stable error code from an API error response, e.g. "AI_NOT_CONFIGURED". */
+export function apiErrorCode(e: unknown): string | undefined {
+  const data = (e as { response?: { data?: { error?: { code?: string } | string } } }).response?.data?.error;
+  return typeof data === 'object' && data ? data.code : undefined;
+}
+
+/** Codes that mean the AI setup itself needs attention (as opposed to a temporary failure). */
+export const AI_SETUP_CODES = ['AI_NOT_CONFIGURED', 'AI_AUTH', 'AI_MODEL', 'AI_NETWORK', 'AI_BAD_REQUEST'];

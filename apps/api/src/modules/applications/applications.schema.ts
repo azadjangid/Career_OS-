@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 // Must mirror the Prisma ApplicationStatus enum
 export const APPLICATION_STATUSES = [
-  'SAVED', 'READY_TO_APPLY', 'APPLIED', 'SCREENING', 'INTERVIEW',
+  'SAVED', 'READY_TO_APPLY', 'APPLIED', 'ASSESSMENT', 'SCREENING', 'INTERVIEW',
   'TECHNICAL_ROUND', 'FINAL_ROUND', 'OFFER', 'REJECTED', 'WITHDRAWN',
 ] as const;
 
@@ -23,6 +23,10 @@ export const createApplicationSchema = z
     notes: z.string().max(5000).optional(),
     coverLetterText: z.string().max(10000).optional(),
     salaryExpected: z.number().min(0).optional(),
+    recruiterName: z.string().max(120).optional().nullable(),
+    recruiterEmail: z.string().email().max(200).optional().nullable().or(z.literal('')),
+    recruiterPhone: z.string().max(40).regex(/^[+\d\s().-]*$/, 'Use digits, spaces, +, - and ()').optional().nullable(),
+    recruiterLinkedin: z.string().url().max(300).optional().nullable().or(z.literal('')),
   })
   .refine(d => d.jobId || (d.companyName && d.title), {
     message: 'Provide a jobId, or both companyName and title',
@@ -38,6 +42,10 @@ export const updateApplicationSchema = z.object({
   followUpAt: dateStr.nullable().optional(),
   rejectionReason: z.string().max(500).optional(),
   offerDetails: z.record(z.unknown()).optional(),
+  recruiterName: z.string().max(120).optional().nullable(),
+  recruiterEmail: z.string().email().max(200).optional().nullable().or(z.literal('')),
+  recruiterPhone: z.string().max(40).regex(/^[+\d\s().-]*$/, 'Use digits, spaces, +, - and ()').optional().nullable(),
+  recruiterLinkedin: z.string().url().max(300).optional().nullable().or(z.literal('')),
 });
 
 export const bulkSchema = z.object({

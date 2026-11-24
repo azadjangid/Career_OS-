@@ -7,12 +7,13 @@ export const notificationsController = {
   async list(req: AuthRequest, res: Response, next: NextFunction) {
     try {
       const { unreadOnly, page = '1', limit = '20' } = req.query as Record<string, string>;
-      const skip = (parseInt(page) - 1) * parseInt(limit);
+      const take = Math.min(Math.max(parseInt(limit) || 20, 1), 100);
+      const skip = (Math.max(parseInt(page) || 1, 1) - 1) * take;
       const where: Record<string, unknown> = { userId: req.user!.id };
       if (unreadOnly === 'true') where['read'] = false;
 
       const [notifications, total] = await Promise.all([
-        prisma.notification.findMany({ where, skip, take: parseInt(limit), orderBy: { createdAt: 'desc' } }),
+        prisma.notification.findMany({ where, skip, take, orderBy: { createdAt: 'desc' } }),
         prisma.notification.count({ where }),
       ]);
 

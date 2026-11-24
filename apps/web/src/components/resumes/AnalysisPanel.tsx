@@ -1,18 +1,18 @@
 import type { LucideIcon } from 'lucide-react';
 import { useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Sparkles, CheckCircle2, AlertTriangle, Lightbulb } from 'lucide-react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Loader2, Sparkles, CheckCircle2, AlertTriangle, Lightbulb, XCircle } from 'lucide-react';
 import { api } from '@/lib/api';
 import { apiError } from '@/lib/format';
 import { toast } from '@/store/toast.store';
-import type { Resume, ResumeAnalysis } from '@/lib/types';
+import type { AtsReport, Resume, ResumeAnalysis } from '@/lib/types';
 import { ScoreRing } from '@/components/ui/Bits';
 import { Modal } from '@/components/ui/Modal';
 
 const BARS: Array<[keyof NonNullable<ResumeAnalysis['breakdown']>, string]> = [
   ['keywords', 'Keywords'], ['ats', 'ATS compatibility'], ['format', 'Format'], ['completeness', 'Completeness'],
 ];
-const tone = (n: number) => (n >= 75 ? '#34D399' : n >= 50 ? '#FBBF24' : '#F87171');
+const tone = (n: number) => (n >= 75 ? 'var(--tone-green)' : n >= 50 ? 'var(--tone-amber)' : 'var(--tone-red)');
 
 export default function AnalysisModal({ resume, onClose }: { resume: Resume | null; onClose: () => void }) {
   const qc = useQueryClient();
@@ -37,9 +37,11 @@ export default function AnalysisModal({ resume, onClose }: { resume: Resume | nu
     <Modal open={!!resume} onClose={onClose} title={resume ? `Analysis · ${resume.name}` : 'Analysis'} wide>
       {resume && (
         <div className="space-y-6">
+          <AtsCheckSection resumeId={resume.id} />
+          <h3 className="font-display font-semibold -mb-2" style={{ color: 'var(--fg-primary)' }}>AI analysis</h3>
           {!shown && !run.isPending && (
             <div className="text-center py-6">
-              <p className="text-sm mb-4" style={{ color: 'var(--fg-secondary)' }}>Get an ATS score, a breakdown, and specific suggestions for this resume.</p>
+              <p className="text-sm mb-4" style={{ color: 'var(--fg-secondary)' }}>Get an AI review with strengths, weaknesses and specific suggestions for this resume.</p>
               <button className="btn-primary" onClick={() => run.mutate(false)}><Sparkles size={15} /> Analyze with AI</button>
             </div>
           )}
@@ -110,4 +112,44 @@ function ListBlock({ icon: Icon, color, title, items }: { icon: LucideIcon; colo
 function Chips({ title, items, cls }: { title: string; items?: string[]; cls: string }) {
   if (!items?.length) return null;
   return <div><p className="text-xs mb-1.5" style={{ color: 'var(--fg-muted)' }}>{title}</p><div className="flex flex-wrap gap-1.5">{items.map(s => <span key={s} className={`badge ${cls}`}>{s}</span>)}</div></div>;
+}
+
+/** Rule-based ATS check from the server. Works without any AI key. */
+function AtsCheckSection({ resumeId }: { resumeId: string }) {
+  const { data, isLoading, isError, error, refetch } = useQuery({
+    queryKey: ['resume-ats', resumeId],
+    queryFn: async () => (await api.get(`/resumes/${resumeId}/ats`)).data.data as AtsReport,
+  });
+  if (isLoading) return <p className="text-sm py-4" style={{ color: 'var(--fg-secondary)' }}><Loader2 className="inline animate-spin mr-2" size={16} />Checking ATS readiness…</p>;
+  if (isError || !data) return <p className="text-sm" style={{ color: 'var(--tone-red)' }}>{apiError(error, 'Could not run the ATS check')} <button className="underline" onClick={() => refetch()}>Retry</button></p>;
+  const failing = data.checks.filter(c => !c.passed);
+  return (
+    <section aria-labelledby="ats-h" className="space-y-4">
+      <div className="flex flex-col sm:flex-row items-center gap-6">
+        <ScoreRing score={data.score} label="ATS check" />
+        <div className="flex-1 w-full">
+          <h3 id="ats-h" className="font-display font-semibold mb-1" style={{ color: 'var(--fg-primary)' }}>ATS readiness</h3>
+          <p className="text-xs mb-3" style={{ color: 'var(--fg-muted)' }}>
+            Rule-based check of {data.checks.length} things applicant tracking systems look for ({data.wordCount} words read){data.keywordMatch ? `, plus keyword fit against ${data.keywordMatch.against}` : ''}. No AI needed.
+          </p>
+          <ul className="grid sm:grid-cols-2 gap-x-4 gap-y-1 text-xs">
+            {data.checks.map(c => (
+              <li key={c.id} className="flex items-center gap-1.5" style={{ color: 'var(--fg-secondary)' }}>
+                {c.passed ? <CheckCircle2 size={13} color="#34D399" aria-label="passed" /> : <XCircle size={13} color="#F87171" aria-label="needs work" />}
+                <span className="flex-1">{c.label}</span><span className="font-mono" style={{ color: 'var(--fg-muted)' }}>{c.points}/{c.max}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+      {failing.length > 0 && <ListBlock icon={Lightbulb} color="#FBBF24" title="Fix these first" items={failing.map(c => c.tip ?? c.label)} />}
+      {data.keywordMatch && (
+        <div className="space-y-2">
+          <p className="text-sm" style={{ color: 'var(--fg-primary)' }}>Keyword fit with {data.keywordMatch.against}: <strong style={{ color: tone(data.keywordMatch.score) }}>{data.keywordMatch.score}%</strong></p>
+          <Chips title="Skills these jobs ask for that your resume doesn’t mention" items={data.keywordMatch.missing} cls="badge-amber" />
+          <Chips title="Already covered" items={data.keywordMatch.matched} cls="badge-green" />
+        </div>
+      )}
+    </section>
+  );
 }

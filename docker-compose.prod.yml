@@ -1,0 +1,135 @@
+# Production stack for a single server (VPS). See README → "Deploy to a server".
+#   1. cp .env.example .env.production and fill in every value marked REQUIRED
+#   2. Point your domain's DNS A record at the server
+#   3. docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+# Caddy gets and renews the HTTPS certificate for $DOMAIN automatically.
+
+x-app-env: &app-env
+  NODE_ENV: production
+  DATABASE_URL: postgresql://${POSTGRES_USER:-careeros}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-careeros}
+  REDIS_URL: redis://redis:6379
+  FRONTEND_URL: https://${DOMAIN:?set DOMAIN}
+  APP_URL: https://${DOMAIN}
+  CORS_ORIGINS: https://${DOMAIN}
+  STORAGE_LOCAL_PATH: /app/uploads
+  # Caddy → nginx → API
+  TRUST_PROXY: '2'
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: '10m'
+    max-file: '5'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-careeros}
+      POSTGRES_USER: ${POSTGRES_USER:-careeros}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *logging
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging: *logging
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    image: careeros-api:latest
+    restart: always
+    env_file: .env.production
+    environment: *app-env
+    volumes:
+      - uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging: *logging
+
+  worker:
+    image: careeros-api:latest
+    command: ['worker']
+    restart: always
+    env_file: .env.production
+    environment: *app-env
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    logging: *logging
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        VITE_SENTRY_DSN: ${VITE_SENTRY_DSN:-}
+    restart: always
+    depends_on:
+      - api
+    logging: *logging
+
+  # HTTPS reverse proxy with automatic Let's Encrypt certificates
+  caddy:
+    image: caddy:2-alpine
+    restart: always
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN}
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+    logging: *logging
+
+  # Nightly database dump into the "backups" volume, keeping the newest 14. See README for restoring.
+  backup:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-careeros}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB:-careeros}
+      KEEP: ${BACKUP_KEEP:-14}
+    volumes:
+      - backups:/backups
+      - ./docker/backup.sh:/backup.sh:ro
+    entrypoint: ['/bin/sh', '/backup.sh']
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging: *logging
+
+volumes:
+  postgres_data:
+  redis_data:
+  uploads:
+  backups:
+  caddy_data:
+  caddy_config:

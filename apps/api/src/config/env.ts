@@ -2,7 +2,10 @@ import { z } from 'zod';
 import dotenv from 'dotenv';
 import path from 'node:path';
 
-dotenv.config({ path: path.resolve(__dirname, '../../../../.env') });
+// Tests configure their own environment (tests/setup.ts); a developer's .env must not leak real keys into them
+if (process.env['NODE_ENV'] !== 'test') {
+  dotenv.config({ path: path.resolve(__dirname, '../../../../.env'), quiet: true });
+}
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -11,7 +14,7 @@ const envSchema = z.object({
   REDIS_URL: z.string().default('redis://localhost:6379'),
 
   JWT_SECRET: z.string().min(32),
-  JWT_EXPIRES_IN: z.string().default('7d'),
+  JWT_EXPIRES_IN: z.string().default('15m'),
   JWT_REFRESH_SECRET: z.string().min(32),
   JWT_REFRESH_EXPIRES_IN: z.string().default('30d'),
   BCRYPT_ROUNDS: z.string().default('12').transform(Number),
@@ -25,7 +28,15 @@ const envSchema = z.object({
   ANTHROPIC_API_KEY: z.string().optional(),
   NVIDIA_API_KEY: z.string().optional(),
   NVIDIA_BASE_URL: z.string().default('https://integrate.api.nvidia.com/v1'),
-  NVIDIA_MODEL: z.string().default('meta/llama-3.3-70b-instruct'),
+  // meta/llama-3.3-70b-instruct (the old default) was retired by NVIDIA and returns HTTP 410
+  NVIDIA_MODEL: z.string().default('nvidia/nemotron-3-super-120b-a12b'),
+  // Optional: a second provider to use when the primary one is down (needs that provider's key too)
+  AI_FALLBACK_PROVIDER: z.enum(['anthropic', 'nvidia', 'none']).default('none'),
+  ANTHROPIC_BASE_URL: z.string().optional(),
+  // Per-attempt timeout and retries for transient provider failures (429, 5xx, network)
+  AI_TIMEOUT_MS: z.string().default('90000').transform(Number),
+  AI_MAX_RETRIES: z.string().default('2').transform(Number),
+  AI_RETRY_BASE_MS: z.string().default('500').transform(Number),
   AI_MODEL: z.string().default('claude-opus-5-5'),
   AI_AGENT_MAX_STEPS: z.string().default('8').transform(Number),
   AI_MAX_TOKENS: z.string().default('4096').transform(Number),
@@ -48,14 +59,25 @@ const envSchema = z.object({
   S3_ENDPOINT: z.string().optional(),
 
   RATE_LIMIT_WINDOW_MS: z.string().default('900000').transform(Number),
-  RATE_LIMIT_MAX_REQUESTS: z.string().default('100').transform(Number),
+  RATE_LIMIT_MAX_REQUESTS: z.string().default('1000').transform(Number),
   AI_RATE_LIMIT_PER_MINUTE: z.string().default('20').transform(Number),
 
-  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   LOG_FORMAT: z.enum(['pretty', 'json']).default('pretty'),
   APP_NAME: z.string().default('CareerOS'),
   APP_URL: z.string().default('http://localhost:5173'),
   DEMO_MODE: z.string().default('false').transform(v => v === 'true'),
+  // Number of reverse proxies in front of the API (nginx = 1). Used for client IPs in rate limiting.
+  TRUST_PROXY: z.string().default('1').transform(Number),
+  // Refresh cookie "Secure" flag. Defaults to on in production; set 'false' only for plain-HTTP local Docker.
+  COOKIE_SECURE: z.enum(['true', 'false']).optional().transform(v => (v === undefined ? undefined : v === 'true')),
+  SENTRY_DSN: z.string().optional(),
+  // Timezone for the worker's daily schedules (reminders at 9 AM, cleanup at 3:30 AM)
+  SCHEDULER_TZ: z.string().default('Asia/Kolkata'),
+  SENTRY_TRACES_SAMPLE_RATE: z.string().default('0').transform(Number),
+  // Adzuna job search API (free key at developer.adzuna.com). Optional.
+  ADZUNA_APP_ID: z.string().optional(),
+  ADZUNA_APP_KEY: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -68,14 +90,18 @@ if (!parsed.success) {
 
 const p = parsed.data;
 const isNvidia = p.AI_PROVIDER === 'nvidia';
+// Placeholders from .env.example are ignored because they don't have the real prefix
+const anthropicKey = [p.ANTHROPIC_API_KEY, !isNvidia ? p.AI_API_KEY : undefined].find(k => k && k.trim().startsWith('sk-ant-'))?.trim();
+const nvidiaKey = [p.NVIDIA_API_KEY, isNvidia ? p.AI_API_KEY : undefined].find(k => k && k.trim().startsWith('nvapi-'))?.trim();
 
 export const env = {
   ...p,
-  // Key for the selected provider. Placeholders from .env.example are ignored because they
-  // don't have the real prefix (sk-ant- for Anthropic, nvapi- for NVIDIA).
-  AI_KEY: isNvidia
-    ? [p.NVIDIA_API_KEY, p.AI_API_KEY].find(k => k && k.startsWith('nvapi-'))
-    : [p.ANTHROPIC_API_KEY, p.AI_API_KEY].find(k => k && k.startsWith('sk-ant-')),
+  ANTHROPIC_KEY: anthropicKey,
+  NVIDIA_KEY: nvidiaKey,
+  // Key for the selected provider
+  AI_KEY: isNvidia ? nvidiaKey : anthropicKey,
+  // True when a key was set but doesn't look like a real key for that provider (helps the health check explain it)
+  AI_KEY_MALFORMED: Boolean(isNvidia ? (p.NVIDIA_API_KEY || p.AI_API_KEY) && !nvidiaKey : (p.ANTHROPIC_API_KEY || p.AI_API_KEY) && !anthropicKey),
   // Default model for the selected provider (users can override in Settings)
   AI_DEFAULT_MODEL: isNvidia ? p.NVIDIA_MODEL : p.AI_MODEL,
 };

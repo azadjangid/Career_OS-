@@ -1,10 +1,13 @@
 import { Response, NextFunction } from 'express';
-import { Prisma, WorkMode, ExperienceLevel } from '@prisma/client';
+import { Prisma } from '@prisma/client';
+import { buildJobWhere, cleanJobFilters } from '../../lib/jobQuery';
+import { dedupeKey, detectExperienceLevel, extractSkills, mergeSkills, sourceNameFromExternalId } from '../../lib/jobEnrich';
 import { AuthRequest } from '../../middleware/auth';
 import { prisma } from '../../config/database';
 import { AppError } from '../../middleware/errorHandler';
 import { quickMatch, userSkillSet } from '../../lib/match';
-import { fetchRemotive } from '../../lib/jobFeeds';
+import { listJobSources } from '../../lib/jobFeeds';
+import { importJobsForUser, readJobSourceSettings } from '../../lib/jobImport';
 import { getUserAIPrefs } from '../../lib/aiPrefs';
 import { matchJobForUser } from '../../lib/jobMatch';
 import { env } from '../../config/env';
@@ -12,7 +15,6 @@ import { logger } from '../../config/logger';
 
 const uid = (req: AuthRequest) => req.user!.id;
 const param = (req: AuthRequest, k: string) => req.params[k] as string;
-const DAY = 86_400_000;
 
 type Q = Record<string, string | undefined>;
 
@@ -25,29 +27,7 @@ export const jobsController = {
       const limit = Math.min(parseInt(q['limit'] ?? '20') || 20, 100);
       const sort = q['sort'] ?? 'date';
 
-      const and: Prisma.JobWhereInput[] = [];
-      if (q['q']) {
-        and.push({
-          OR: [
-            { title: { contains: q['q'], mode: 'insensitive' } },
-            { companyName: { contains: q['q'], mode: 'insensitive' } },
-            { skills: { has: q['q'] } },
-          ],
-        });
-      }
-      if (q['location']) and.push({ location: { contains: q['location'], mode: 'insensitive' } });
-      if (q['workMode']) and.push({ workMode: q['workMode'] as WorkMode });
-      if (q['experienceLevel']) and.push({ experienceLevel: q['experienceLevel'] as ExperienceLevel });
-      if (q['salaryMin']) and.push({ OR: [{ salaryMax: { gte: parseInt(q['salaryMin']) } }, { salaryMax: null }] });
-      if (q['salaryMax']) and.push({ OR: [{ salaryMin: { lte: parseInt(q['salaryMax']) } }, { salaryMin: null }] });
-      if (q['companySize']) and.push({ company: { size: q['companySize'] } });
-      if (q['posted']) {
-        const days = { '24h': 1, week: 7, month: 30 }[q['posted']];
-        if (days) and.push({ postedAt: { gte: new Date(Date.now() - days * DAY) } });
-      }
-      if (q['saved'] === 'true') and.push({ savedJobs: { some: { userId } } });
-
-      const where: Prisma.JobWhereInput = { userId, isActive: true, AND: and };
+      const where = buildJobWhere(userId, q);
       const include = {
         company: { select: { logo: true, size: true } },
         matches: { where: { userId }, select: { overallScore: true, matchedSkills: true, missingSkills: true } },
@@ -61,7 +41,7 @@ export const jobsController = {
           ? { score: Math.round(ai.overallScore), matched: ai.matchedSkills, missing: ai.missingSkills, total: j.skills.length, source: 'ai' as const }
           : quickMatch(j.skills, skills);
         const { matches: _m, savedJobs, applications, ...job } = j;
-        return { ...job, saved: savedJobs.length > 0, application: applications[0] ?? null, match };
+        return { ...job, sourceName: job.sourceName ?? sourceNameFromExternalId(job.externalId), saved: savedJobs.length > 0, application: applications[0] ?? null, match };
       };
 
       const skills = await userSkillSet(userId);
@@ -181,40 +161,101 @@ export const jobsController = {
       const applyUrl = str('applyUrl', 1000);
       if (applyUrl && !/^https?:\/\//i.test(applyUrl)) throw new AppError('Job URL must start with http:// or https://', 400);
 
+      const description = str('description', 20_000);
+      const given = Array.isArray(b['skills']) ? (b['skills'] as unknown[]).filter((s): s is string => typeof s === 'string').slice(0, 20) : [];
+      const key = dedupeKey(companyName, title);
+      const existing = await prisma.job.findFirst({ where: { userId: uid(req), dedupeKey: key }, select: { id: true } });
       const job = await prisma.job.create({
         data: {
           userId: uid(req), title, companyName, applyUrl, sourceUrl: applyUrl,
-          location: str('location', 200), description: str('description', 20_000),
-          skills: Array.isArray(b['skills']) ? (b['skills'] as unknown[]).filter((s): s is string => typeof s === 'string').slice(0, 20) : [],
+          location: str('location', 200), description, country: '',
+          skills: mergeSkills(given, extractSkills(title, description)),
+          experienceLevel: detectExperienceLevel(title, description),
+          sourceName: 'Added by you', dedupeKey: key,
           postedAt: new Date(),
         },
       });
       await prisma.savedJob.create({ data: { userId: uid(req), jobId: job.id } });
-      res.status(201).json({ success: true, data: job });
+      res.status(201).json({ success: true, data: { ...job, possibleDuplicateOf: existing?.id ?? null } });
     } catch (e) { next(e); }
   },
 
-  /** Pull fresh remote jobs from Remotive's public API into this user's job list. */
+  // ── Saved searches and alerts (JobSearch rows with a name) ─────────────────
+  async listSearches(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const rows = await prisma.jobSearch.findMany({ where: { userId: uid(req), name: { not: null } }, orderBy: { createdAt: 'desc' } });
+      // Live count of matches so the list shows what each search finds today
+      const data = await Promise.all(rows.map(async r => ({
+        ...r,
+        matches: await prisma.job.count({ where: buildJobWhere(uid(req), (r.filters ?? {}) as Record<string, string>) }),
+      })));
+      res.json({ success: true, data });
+    } catch (e) { next(e); }
+  },
+
+  async createSearch(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const b = req.body as { name?: unknown; filters?: unknown; alertEnabled?: unknown };
+      const name = typeof b.name === 'string' ? b.name.trim().slice(0, 80) : '';
+      if (!name) throw new AppError('Give the search a name', 400);
+      const filters = cleanJobFilters((b.filters ?? {}) as Record<string, unknown>);
+      if (!Object.keys(filters).length) throw new AppError('Set at least one filter or keyword to save a search', 400);
+      if ((await prisma.jobSearch.count({ where: { userId: uid(req), name: { not: null } } })) >= 20) throw new AppError('You can keep up to 20 saved searches', 409);
+      const resultCount = await prisma.job.count({ where: buildJobWhere(uid(req), filters) });
+      const row = await prisma.jobSearch.create({
+        data: { userId: uid(req), name, query: filters['q'] ?? '', filters, resultCount, alertEnabled: b.alertEnabled === true, lastRunAt: new Date() },
+      });
+      res.status(201).json({ success: true, data: row });
+    } catch (e) { next(e); }
+  },
+
+  async updateSearch(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const b = req.body as { name?: unknown; alertEnabled?: unknown };
+      const data: Prisma.JobSearchUpdateManyMutationInput = {};
+      if (typeof b.name === 'string' && b.name.trim()) data.name = b.name.trim().slice(0, 80);
+      if (typeof b.alertEnabled === 'boolean') { data.alertEnabled = b.alertEnabled; if (b.alertEnabled) data.lastRunAt = new Date(); }
+      const r = await prisma.jobSearch.updateMany({ where: { id: param(req, 'searchId'), userId: uid(req), name: { not: null } }, data });
+      if (!r.count) throw new AppError('Saved search not found', 404);
+      res.json({ success: true, data: { updated: true } });
+    } catch (e) { next(e); }
+  },
+
+  async deleteSearch(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const r = await prisma.jobSearch.deleteMany({ where: { id: param(req, 'searchId'), userId: uid(req) } });
+      if (!r.count) throw new AppError('Saved search not found', 404);
+      res.json({ success: true, data: { deleted: true } });
+    } catch (e) { next(e); }
+  },
+
+  /** Job sources this server can import from, and the user's current choices. */
+  async listSources(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const prefs = await prisma.userPreference.findUnique({ where: { userId: uid(req) }, select: { extras: true } });
+      const settings = readJobSourceSettings((prefs?.extras ?? {}) as Record<string, unknown>);
+      res.json({ success: true, data: { sources: listJobSources(), settings } });
+    } catch (e) { next(e); }
+  },
+
+  /** Pull fresh jobs from the user's chosen sources (or the ones in the request) into their job list. */
   async fetchJobs(req: AuthRequest, res: Response, next: NextFunction) {
     try {
       const userId = uid(req);
-      const search = String((req.body as { search?: string }).search ?? '').slice(0, 100);
+      const body = req.body as { search?: string; sources?: unknown };
+      const search = String(body.search ?? '').slice(0, 100);
 
-      // Remotive asks API consumers to fetch sparingly; cap to one pull per 10 minutes per user.
+      // Public feeds ask consumers to fetch sparingly; cap to one pull per 10 minutes per user.
       const prefs = await prisma.userPreference.findUnique({ where: { userId }, select: { extras: true } });
       const extras = (prefs?.extras ?? {}) as Record<string, unknown>;
       const last = typeof extras['lastJobFetchAt'] === 'string' ? Date.parse(extras['lastJobFetchAt']) : 0;
       if (Date.now() - last < 10 * 60_000) throw new AppError('Jobs were fetched recently. Try again in a few minutes.', 429);
 
-      const incoming = await fetchRemotive(search);
-      let created = 0;
-      const newIds: string[] = [];
-      for (const j of incoming) {
-        const exists = await prisma.job.findFirst({ where: { userId, externalId: j.externalId, sourceId: null }, select: { id: true } });
-        if (exists) continue;
-        const row = await prisma.job.create({ data: { ...j, userId } });
-        newIds.push(row.id);
-        created++;
+      const settings = readJobSourceSettings({ ...extras, ...(Array.isArray(body.sources) ? { jobSources: body.sources } : {}) });
+      const result = await importJobsForUser(userId, settings, search);
+      const newIds = result.newIds;
+      if (!result.fetched && result.bySource.every(s => s.error)) {
+        throw new AppError(result.bySource.map(s => `${s.source}: ${s.error}`).join('; ') || 'No job sources selected', 502);
       }
 
       // "Auto-analyze new jobs" preference: AI-match a few of the newest ones (capped to bound token spend)
@@ -233,7 +274,7 @@ export const jobsController = {
         update: { extras: { ...extras, lastJobFetchAt: new Date().toISOString() } },
       });
 
-      res.json({ success: true, data: { fetched: incoming.length, created, source: 'Remotive' } });
+      res.json({ success: true, data: { fetched: result.fetched, created: result.created, duplicates: result.duplicates, bySource: result.bySource } });
     } catch (e) { next(e); }
   },
 };

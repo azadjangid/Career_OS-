@@ -1,0 +1,8 @@
+{$DOMAIN} {
+	encode zstd gzip
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+	reverse_proxy web:80 {
+		# Let AI chat streams (Server-Sent Events) through without buffering
+		flush_interval -1
+	}
+}

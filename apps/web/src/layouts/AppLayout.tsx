@@ -5,6 +5,7 @@ import Topbar from '@/components/Topbar';
 import CommandPalette from '@/components/CommandPalette';
 import ShortcutsModal from '@/components/ShortcutsModal';
 import QuickActions from '@/components/QuickActions';
+import VerifyEmailBanner from '@/components/VerifyEmailBanner';
 import ErrorBoundary from '@/components/ui/ErrorBoundary';
 import { useUIStore } from '@/store/ui.store';
 import { useGlobalShortcuts } from '@/hooks/useGlobalShortcuts';
@@ -31,6 +32,7 @@ export default function AppLayout() {
 
       <div className="flex flex-col flex-1 min-w-0">
         <Topbar />
+        <VerifyEmailBanner />
         <main id="main" className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-6">
           <ErrorBoundary resetKey={location.pathname}>
             <AnimatePresence mode="wait" initial={false}>

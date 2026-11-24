@@ -15,8 +15,8 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import EmptyState from '@/components/ui/EmptyState';
 
 const FUNNEL: Array<{ label: string; statuses: AppStatus[] }> = [
-  { label: 'Applied', statuses: ['APPLIED', 'SCREENING', 'INTERVIEW', 'TECHNICAL_ROUND', 'FINAL_ROUND', 'OFFER', 'REJECTED', 'WITHDRAWN'] },
-  { label: 'Screening', statuses: ['SCREENING', 'INTERVIEW', 'TECHNICAL_ROUND', 'FINAL_ROUND', 'OFFER'] },
+  { label: 'Applied', statuses: ['APPLIED', 'ASSESSMENT', 'SCREENING', 'INTERVIEW', 'TECHNICAL_ROUND', 'FINAL_ROUND', 'OFFER', 'REJECTED', 'WITHDRAWN'] },
+  { label: 'Screening', statuses: ['ASSESSMENT', 'SCREENING', 'INTERVIEW', 'TECHNICAL_ROUND', 'FINAL_ROUND', 'OFFER'] },
   { label: 'Interview', statuses: ['INTERVIEW', 'TECHNICAL_ROUND', 'FINAL_ROUND', 'OFFER'] },
   { label: 'Offer', statuses: ['OFFER'] },
 ];
@@ -103,7 +103,7 @@ export default function ApplicationsPage() {
             {STATUSES.map(s => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
           </select>
           <button className="btn-secondary text-sm py-1.5" onClick={exportCsv}><Download size={14} /> Export</button>
-          <button className="text-sm py-1.5 px-3 rounded-lg font-medium flex items-center gap-1.5" style={{ color: '#F87171', border: '1px solid #F8717155' }} onClick={() => setConfirmDelete(true)}><Trash2 size={14} /> Delete</button>
+          <button className="text-sm py-1.5 px-3 rounded-lg font-medium flex items-center gap-1.5" style={{ color: 'var(--tone-red)', border: '1px solid #F8717155' }} onClick={() => setConfirmDelete(true)}><Trash2 size={14} /> Delete</button>
           <button className="btn-ghost p-1.5 ml-auto" onClick={clearSel} aria-label="Clear selection"><X size={16} /></button>
         </div>
       )}

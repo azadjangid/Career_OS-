@@ -41,7 +41,7 @@ export function SectionCard({ title, action, children, className = '' }: { title
 export function ScoreRing({ score, size = 120, label }: { score: number; size?: number; label?: string }) {
   const r = (size - 12) / 2;
   const c = 2 * Math.PI * r;
-  const color = score >= 75 ? '#34D399' : score >= 50 ? '#FBBF24' : '#F87171';
+  const color = score >= 75 ? 'var(--tone-green)' : score >= 50 ? 'var(--tone-amber)' : 'var(--tone-red)';
   return (
     <div className="relative shrink-0" style={{ width: size, height: size }} role="img" aria-label={`${label ?? 'Score'} ${score} out of 100`}>
       <svg width={size} height={size} className="-rotate-90">

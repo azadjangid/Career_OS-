@@ -3,8 +3,8 @@ import { z } from 'zod';
 import { ApplicationStatus, InterviewType } from '@prisma/client';
 import { prisma } from '../config/database';
 import { env } from '../config/env';
-import { assertWithinBudget, trackUsage } from './ai.service';
-import { callLLM, assertConfigured } from '../lib/llm';
+import { assertWithinBudget, trackedCall } from './ai.service';
+import { assertConfigured } from '../lib/llm';
 import { AppError } from '../middleware/errorHandler';
 import { resumeText } from '../lib/match';
 import { getUserAIPrefs, languageNote } from '../lib/aiPrefs';
@@ -180,7 +180,7 @@ const TOOLS: ToolDef[] = [
         prisma.application.findMany({
           where: {
             userId,
-            status: { in: ['APPLIED', 'SCREENING', 'INTERVIEW', 'TECHNICAL_ROUND', 'FINAL_ROUND'] },
+            status: { in: ['APPLIED', 'ASSESSMENT', 'SCREENING', 'INTERVIEW', 'TECHNICAL_ROUND', 'FINAL_ROUND'] },
             updatedAt: { lt: new Date(Date.now() - 14 * 86_400_000) },
           },
           select: { id: true, status: true, updatedAt: true, job: { select: { title: true, companyName: true } } },
@@ -395,7 +395,7 @@ async function loop(userId: string, history: Anthropic.MessageParam[], toolsUsed
     assertConfigured();
     await assertWithinBudget(userId);
     // Streams under the hood (provider-agnostic): avoids HTTP timeouts and lets the UI show tokens as they arrive
-    const response = await callLLM({
+    const response = await trackedCall(userId, 'agent', {
       model: prefs.model,
       maxTokens: 16000,
       system,
@@ -403,7 +403,15 @@ async function loop(userId: string, history: Anthropic.MessageParam[], toolsUsed
       messages,
       onText: emit ? delta => emit({ type: 'text', delta }) : undefined,
     });
-    await trackUsage(userId, 'agent', response.inputTokens, response.outputTokens, prefs.model);
+
+    // An empty assistant turn would be rejected by the provider on the next message and break the chat
+    if (!response.content.some(b => (b.type === 'text' && b.text.trim()) || b.type === 'tool_use')) {
+      if (response.stopReason === 'refusal') {
+        messages.push({ role: 'assistant', content: 'I can’t help with that request.' });
+        return { messages, reply: 'I can’t help with that request.', pending: [], toolsUsed };
+      }
+      throw new AppError('The AI model returned an empty reply. Try again, or pick another model in Settings → AI.', 502, 'AI_EMPTY_RESPONSE');
+    }
 
     // Keep the full assistant content (incl. any thinking blocks) so Claude's history stays append-only
     messages.push({ role: 'assistant', content: response.content });
@@ -415,7 +423,7 @@ async function loop(userId: string, history: Anthropic.MessageParam[], toolsUsed
         response.stopReason === 'refusal' ? 'I can’t help with that request.'
         : response.stopReason === 'max_tokens' ? `${reply}\n\n(Response was cut off — ask me to continue.)`
         : reply;
-      if (!reply && response.stopReason !== 'end_turn') messages[messages.length - 1] = { role: 'assistant', content: note };
+      if (!reply) messages[messages.length - 1] = { role: 'assistant', content: note || 'No reply.' };
       return { messages, reply: note || reply, pending: [], toolsUsed };
     }
 
@@ -440,6 +448,27 @@ async function loop(userId: string, history: Anthropic.MessageParam[], toolsUsed
   return { messages, reply, pending: [], toolsUsed };
 }
 
+/**
+ * Removes turns that the provider would reject: empty assistant messages saved by older versions
+ * (which broke the chat on the next message) and a trailing user message left by a failed turn.
+ */
+export function sanitizeHistory(history: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
+  const out = history.filter(m => {
+    if (m.role !== 'assistant') return true;
+    if (typeof m.content === 'string') return m.content.trim().length > 0;
+    return m.content.length > 0;
+  });
+  // Two user turns in a row are fine for the API, but a user text right after a dropped assistant
+  // tool_use would orphan tool_results; drop tool_result turns whose tool_use is gone
+  return out.filter((m, i) => {
+    if (m.role !== 'user' || typeof m.content === 'string') return true;
+    const hasResults = m.content.some(b => b.type === 'tool_result');
+    if (!hasResults) return true;
+    const prev = out[i - 1];
+    return Boolean(prev && toolUses(prev).length);
+  });
+}
+
 export const agentService = {
   /** Send a new user message. */
   async send(userId: string, history: Anthropic.MessageParam[], userMessage: string, emit?: Emit): Promise<AgentResult> {
@@ -447,7 +476,7 @@ export const agentService = {
       // A previous action is still awaiting approval; don't stack messages on an open tool_use.
       throw new AppError('Approve or reject the pending action first', 409);
     }
-    return loop(userId, [...history, { role: 'user', content: userMessage }], [], emit);
+    return loop(userId, [...sanitizeHistory(history), { role: 'user', content: userMessage }], [], emit);
   },
 
   /** Approve or reject the pending write actions, then let the agent continue. */

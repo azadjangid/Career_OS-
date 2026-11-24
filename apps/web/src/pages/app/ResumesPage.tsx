@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { FileText, Upload, Trash2, Star, BarChart2, Loader2, Copy, Pencil, Eye, Wand2, Mail, UserCheck, Check, X } from 'lucide-react';
+import { FileText, Upload, Trash2, Star, BarChart2, Loader2, Copy, Pencil, Eye, Wand2, Mail, UserCheck, Check, X, History } from 'lucide-react';
 import { api } from '@/lib/api';
 import { apiError, formatDate } from '@/lib/format';
 import { toast } from '@/store/toast.store';
@@ -12,11 +12,12 @@ import AnalysisModal from '@/components/resumes/AnalysisPanel';
 import TailorModal from '@/components/resumes/TailorModal';
 import CoverLetterModal from '@/components/resumes/CoverLetterModal';
 import PreviewModal from '@/components/resumes/PreviewModal';
+import VersionsModal from '@/components/resumes/VersionsModal';
 import { ConfirmDialog } from '@/components/ui/Modal';
 import { ListSkeleton } from '@/components/ui/Skeleton';
 import EmptyState from '@/components/ui/EmptyState';
 
-type Panel = { kind: 'analysis' | 'tailor' | 'cover' | 'preview'; resume: Resume } | null;
+type Panel = { kind: 'analysis' | 'tailor' | 'cover' | 'preview' | 'versions'; resume: Resume } | null;
 
 export default function ResumesPage() {
   const [params, setParams] = useSearchParams();
@@ -45,7 +46,7 @@ export default function ResumesPage() {
 
   const del = useMutation({ mutationFn: (id: string) => api.delete(`/resumes/${id}`), onSuccess: () => { toast.success('Resume deleted'); setDeleting(null); refresh(); }, onError: onErr('Could not delete resume') });
   const setDefault = useMutation({ mutationFn: (id: string) => api.post(`/resumes/${id}/set-default`), onSuccess: () => { toast.success('Default resume updated'); refresh(); }, onError: onErr('Could not update default') });
-  const duplicate = useMutation({ mutationFn: (r: Resume) => api.post(`/resumes/${r.id}/duplicate`, { name: `${r.name} v${r.version + 1}` }), onSuccess: () => { toast.success('Duplicated — rename it to track a new version'); refresh(); }, onError: onErr('Could not duplicate') });
+  const duplicate = useMutation({ mutationFn: (r: Resume) => api.post(`/resumes/${r.id}/duplicate`, { name: `${r.name} (copy)` }), onSuccess: () => { toast.success('Duplicated as a separate resume. Use Versions to keep edits of the same resume.'); refresh(); }, onError: onErr('Could not duplicate') });
   const rename = useMutation({ mutationFn: ({ id, name }: { id: string; name: string }) => api.put(`/resumes/${id}`, { name }), onSuccess: () => { setRenaming(null); refresh(); }, onError: onErr('Could not rename') });
   const parse = useMutation({
     mutationFn: (id: string) => api.post(`/resumes/${id}/parse`, { applyToProfile: true }),
@@ -69,7 +70,7 @@ export default function ResumesPage() {
         {uploading || filling ? <Loader2 size={30} className="mx-auto mb-2 animate-spin" style={{ color: 'var(--accent)' }} /> : <Upload size={30} className="mx-auto mb-2" style={{ color: 'var(--accent)' }} />}
         <p className="font-medium" style={{ color: 'var(--fg-primary)' }}>{uploading ? 'Uploading…' : filling ? 'Reading your resume with AI…' : 'Upload a resume'}</p>
         <p className="text-sm" style={{ color: 'var(--fg-muted)' }}>Drag & drop or click · PDF or DOCX · up to 10 MB</p>
-        <input ref={fileRef} type="file" accept=".pdf,.doc,.docx" className="hidden" onChange={e => { handleFile(e.target.files?.[0]); e.target.value = ''; }} />
+        <input ref={fileRef} type="file" accept=".pdf,.docx" className="hidden" onChange={e => { handleFile(e.target.files?.[0]); e.target.value = ''; }} />
       </div>
 
       {isLoading ? <ListSkeleton rows={3} />
@@ -97,7 +98,7 @@ export default function ResumesPage() {
                         </div>
                       )}
                       <div className="flex items-center gap-3 mt-0.5 text-xs flex-wrap" style={{ color: 'var(--fg-muted)' }}>
-                        {r.atsScore != null && <span className="font-mono" style={{ color: r.atsScore >= 70 ? '#34D399' : r.atsScore >= 50 ? '#FBBF24' : '#F87171' }}>ATS {r.atsScore}/100</span>}
+                        {r.atsScore != null && <span className="font-mono" style={{ color: r.atsScore >= 70 ? 'var(--tone-green)' : r.atsScore >= 50 ? 'var(--tone-amber)' : 'var(--tone-red)' }}>ATS {r.atsScore}/100</span>}
                         {r.fileSize ? <span>{(r.fileSize / 1024).toFixed(0)} KB</span> : null}
                         <span>{formatDate(r.createdAt)}</span>
                         {r.extractedSkills.length > 0 && <span>{r.extractedSkills.length} skills found</span>}
@@ -107,11 +108,12 @@ export default function ResumesPage() {
 
                   <div className="flex items-center gap-0.5 flex-wrap" role="group" aria-label={`Actions for ${r.name}`}>
                     <IconBtn label="Preview" onClick={() => setPanel({ kind: 'preview', resume: r })}><Eye size={16} /></IconBtn>
+                    <IconBtn label="Versions, AI improve and PDF" onClick={() => setPanel({ kind: 'versions', resume: r })}><History size={16} /></IconBtn>
                     <IconBtn label="Analysis" onClick={() => analyzeQuick(r)}><BarChart2 size={16} /></IconBtn>
                     <IconBtn label="Tailor to a job" onClick={() => setPanel({ kind: 'tailor', resume: r })}><Wand2 size={16} /></IconBtn>
                     <IconBtn label="Generate cover letter" onClick={() => setPanel({ kind: 'cover', resume: r })}><Mail size={16} /></IconBtn>
                     <IconBtn label="Fill my profile from this resume" onClick={() => parse.mutate(r.id)} busy={parse.isPending && parse.variables === r.id}><UserCheck size={16} /></IconBtn>
-                    <IconBtn label="Duplicate as a new version" onClick={() => duplicate.mutate(r)}><Copy size={16} /></IconBtn>
+                    <IconBtn label="Duplicate as a separate resume" onClick={() => duplicate.mutate(r)}><Copy size={16} /></IconBtn>
                     <IconBtn label="Rename" onClick={() => { setRenaming(r.id); setNewName(r.name); }}><Pencil size={16} /></IconBtn>
                     {!r.isDefault && <IconBtn label="Set as default" onClick={() => setDefault.mutate(r.id)}><Star size={16} /></IconBtn>}
                     <IconBtn label="Delete" danger onClick={() => setDeleting(r)}><Trash2 size={16} /></IconBtn>
@@ -126,6 +128,7 @@ export default function ResumesPage() {
       <TailorModal resume={panel?.kind === 'tailor' ? panel.resume : null} onClose={() => setPanel(null)} />
       <CoverLetterModal resume={panel?.kind === 'cover' ? panel.resume : null} onClose={() => setPanel(null)} />
       <PreviewModal resume={panel?.kind === 'preview' ? panel.resume : null} onClose={() => setPanel(null)} />
+      <VersionsModal resume={panel?.kind === 'versions' ? panel.resume : null} onClose={() => setPanel(null)} />
       <ConfirmDialog open={!!deleting} onClose={() => setDeleting(null)} danger busy={del.isPending} title="Delete this resume?"
         message={`“${deleting?.name}” will be removed. Applications that used it keep their history.`} confirmLabel="Delete" onConfirm={() => deleting && del.mutate(deleting.id)} />
     </div>
@@ -134,7 +137,7 @@ export default function ResumesPage() {
 
 function IconBtn({ label, onClick, children, danger, busy }: { label: string; onClick: () => void; children: React.ReactNode; danger?: boolean; busy?: boolean }) {
   return (
-    <button onClick={onClick} className="btn-ghost p-2" title={label} aria-label={label} disabled={busy} style={danger ? { color: '#F87171' } : undefined}>
+    <button onClick={onClick} className="btn-ghost p-2" title={label} aria-label={label} disabled={busy} style={danger ? { color: 'var(--tone-red)' } : undefined}>
       {busy ? <Loader2 size={16} className="animate-spin" /> : children}
     </button>
   );

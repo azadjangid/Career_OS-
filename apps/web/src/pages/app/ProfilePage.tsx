@@ -174,7 +174,7 @@ function Field({ label, children, error, className }: { label: string; children:
     <div className={className}>
       <label className="label">{label}</label>
       {children}
-      {error && <p className="text-xs mt-1" style={{ color: '#F87171' }}>{error}</p>}
+      {error && <p className="text-xs mt-1" style={{ color: 'var(--tone-red)' }}>{error}</p>}
     </div>
   );
 }

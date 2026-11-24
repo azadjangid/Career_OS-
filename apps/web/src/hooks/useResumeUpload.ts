@@ -6,7 +6,7 @@ import { toast } from '@/store/toast.store';
 import type { Resume } from '@/lib/types';
 
 export const MAX_RESUME_MB = 10;
-const ALLOWED = ['.pdf', '.doc', '.docx'];
+const ALLOWED = ['.pdf', '.docx'];
 
 interface Options {
   /**

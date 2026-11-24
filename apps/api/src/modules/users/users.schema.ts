@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+/** ISO date string → Date; rejects strings Date can't parse instead of storing "Invalid Date". */
+const date = z.string().refine(v => !Number.isNaN(Date.parse(v)), 'Invalid date').transform(v => new Date(v));
+
 export const updateProfileSchema = z.object({
   headline: z.string().max(200).optional(),
   summary: z.string().max(2000).optional(),
@@ -35,8 +38,8 @@ export const addSkillSchema = z.object({
 export const addExperienceSchema = z.object({
   title: z.string().min(1).max(200),
   company: z.string().min(1).max(200),
-  startDate: z.string().transform(s => new Date(s)),
-  endDate: z.string().transform(s => new Date(s)).optional(),
+  startDate: date,
+  endDate: date.optional(),
   current: z.boolean().default(false),
   description: z.string().max(2000).optional(),
   technologies: z.array(z.string()).max(20).optional(),
@@ -46,8 +49,8 @@ export const addEducationSchema = z.object({
   degree: z.string().min(1).max(200),
   field: z.string().max(200).default(''),
   institution: z.string().min(1).max(200),
-  startDate: z.string().transform(s => new Date(s)).default('2000-01-01'),
-  endDate: z.string().transform(s => new Date(s)).optional(),
+  startDate: date.default('2000-01-01'),
+  endDate: date.optional(),
   grade: z.string().max(20).optional(),
 });
 
@@ -57,6 +60,30 @@ export const addProjectSchema = z.object({
   url: z.string().url().optional().or(z.literal('')),
   repoUrl: z.string().url().optional().or(z.literal('')),
   technologies: z.array(z.string()).max(20).optional(),
-  startDate: z.string().transform(s => new Date(s)).optional(),
-  endDate: z.string().transform(s => new Date(s)).optional(),
+  startDate: date.optional(),
+  endDate: date.optional(),
 });
+
+// Updates accept the same fields as creation, all optional; unknown keys (e.g. profileId) are rejected
+export const updateSkillSchema = addSkillSchema.partial().strict();
+export const updateExperienceSchema = addExperienceSchema.partial().strict();
+export const updateEducationSchema = addEducationSchema.partial().strict();
+export const updateProjectSchema = addProjectSchema.partial().strict();
+
+export const updatePreferencesSchema = z.object({
+  emailJobAlerts: z.boolean(),
+  emailApplicationUpdates: z.boolean(),
+  emailInterviewReminders: z.boolean(),
+  emailWeeklySummary: z.boolean(),
+  inAppJobAlerts: z.boolean(),
+  inAppApplicationUpdates: z.boolean(),
+  jobAlertMinMatchScore: z.number().int().min(0).max(100),
+  automationPaused: z.boolean(),
+  dailySummary: z.boolean(),
+  emailDailySummary: z.boolean(),
+  weeklyReport: z.boolean(),
+  resumeNudges: z.boolean(),
+  theme: z.enum(['dark', 'light', 'system']),
+  language: z.string().min(2).max(10),
+  timezone: z.string().min(1).max(64),
+}).partial().strict();

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import ReactMarkdown from 'react-markdown';
+import { Link } from 'react-router-dom';
 import remarkGfm from 'remark-gfm';
 import {
-  Brain, Send, Plus, Trash2, Loader2, User, Sparkles, Search, Paperclip, X, Copy, Check, FileDown, Menu, Square,
+  Brain, Send, Plus, Trash2, Loader2, User, Sparkles, Search, Paperclip, X, Copy, Check, FileDown, Menu, Square, Wrench,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { streamPost, StreamError } from '@/lib/sse';
@@ -13,6 +14,7 @@ import { toast } from '@/store/toast.store';
 import { useResumes, useAIUsage } from '@/hooks/queries';
 import { useResumeUpload } from '@/hooks/useResumeUpload';
 import { Skeleton } from '@/components/ui/Skeleton';
+import CareerToolsModal from '@/components/ai/CareerToolsModal';
 
 interface Message { role: 'user' | 'assistant'; content: string; tools?: string[] }
 interface Conversation { id: string; title: string; updatedAt: string }
@@ -45,9 +47,10 @@ export default function AIPage() {
   const [streamText, setStreamText] = useState('');
   const [activity, setActivity] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingAction[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ message: string; code?: string } | null>(null);
   const [search, setSearch] = useState('');
   const [listOpen, setListOpen] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
   const [attachment, setAttachment] = useState<Attachment | null>(null);
   const [attachOpen, setAttachOpen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -111,7 +114,14 @@ export default function AIPage() {
         setStreamText(''); setActivity(null);
       } else {
         setStreamText(''); setActivity(null);
-        setError(e instanceof StreamError ? e.message : 'Something went wrong. Please try again.');
+        // The turn wasn't saved: take the message back out of the thread and put it in the box to resend
+        setMessages(prev => (prev[prev.length - 1]?.role === 'user' ? prev.slice(0, -1) : prev));
+        setInput(clean);
+        if (attachment) setAttachment(attachment);
+        setError(e instanceof StreamError
+          ? { message: e.message, code: e.code }
+          : { message: 'Could not reach the CareerOS server. Check your connection and try again.', code: 'NETWORK' });
+        qc.invalidateQueries({ queryKey: ['ai-usage'] });
       }
     } finally { setStreaming(false); abortRef.current = null; }
   };
@@ -119,7 +129,7 @@ export default function AIPage() {
   const resolve = useMutation({
     mutationFn: async (approve: boolean) => (await api.post('/ai/chat/resolve', { conversationId, approve })).data.data as AgentReply,
     onSuccess: data => { applyReply(data); toast.success('Done'); },
-    onError: e => setError(apiError(e)),
+    onError: e => setError({ message: apiError(e) }),
   });
 
   const del = useMutation({
@@ -169,7 +179,7 @@ export default function AIPage() {
               <span className="block truncate pr-6">{c.title}</span>
               <span className="text-[11px]" style={{ color: 'var(--fg-muted)' }} title={formatDate(c.updatedAt, 'd MMM yyyy, h:mm a')}>{timeAgo(c.updatedAt)}</span>
             </button>
-            <button onClick={() => del.mutate(c.id)} className="absolute right-2 top-2.5 p-1 opacity-0 group-hover:opacity-100 focus:opacity-100" aria-label={`Delete chat ${c.title}`} style={{ color: '#F87171' }}><Trash2 size={13} /></button>
+            <button onClick={() => del.mutate(c.id)} className="absolute right-2 top-2.5 p-1 opacity-0 group-hover:opacity-100 focus:opacity-100" aria-label={`Delete chat ${c.title}`} style={{ color: 'var(--tone-red)' }}><Trash2 size={13} /></button>
           </li>
         ))}
       </ul>
@@ -191,6 +201,7 @@ export default function AIPage() {
           <button className="btn-ghost p-2 md:hidden" onClick={() => setListOpen(true)} aria-label="Open chat history"><Menu size={18} /></button>
           <p className="text-sm font-medium truncate px-2 flex items-center gap-2" style={{ color: 'var(--fg-primary)' }}><Brain size={16} style={{ color: 'var(--accent)' }} /> CareerOS AI</p>
           <div className="flex gap-1">
+            <button className="btn-secondary text-xs px-2 py-1.5" onClick={() => setToolsOpen(true)} title="JD analysis, skill gap, application help, roadmap, emails"><Wrench size={14} /> Career tools</button>
             <button className="btn-ghost p-2" onClick={copyChat} disabled={!messages.length} aria-label="Copy conversation" title="Copy conversation">{copied ? <Check size={16} /> : <Copy size={16} />}</button>
             <button className="btn-ghost p-2" onClick={exportPdf} disabled={!messages.length} aria-label="Export as PDF" title="Export as PDF"><FileDown size={16} /></button>
           </div>
@@ -240,7 +251,17 @@ export default function AIPage() {
                   </div>
                 </div>
               )}
-              {error && <div className="rounded-xl p-3 text-sm ml-11" style={{ border: '1px solid #F8717166', color: '#F87171' }} role="alert">{error}</div>}
+              {error && (
+                <div className="rounded-xl p-3 text-sm ml-11 space-y-2" style={{ border: '1px solid #F8717166', color: 'var(--tone-red)' }} role="alert">
+                  <p>{error.message}</p>
+                  <p className="text-xs" style={{ color: 'var(--fg-muted)' }}>
+                    Your message is back in the box below so you can resend it.
+                    {error.code && ['AI_NOT_CONFIGURED', 'AI_AUTH', 'AI_MODEL', 'AI_NETWORK', 'AI_BAD_REQUEST'].includes(error.code) && (
+                      <> Check the AI setup in <Link to="/settings#ai" className="underline">Settings → AI</Link>, where “Test connection” shows exactly what fails.</>
+                    )}
+                  </p>
+                </div>
+              )}
               <div ref={bottomRef} />
             </div>
           )}
@@ -266,7 +287,7 @@ export default function AIPage() {
                       {resumes?.map(r => <li key={r.id}><button className="w-full text-left px-2 py-1.5 rounded-lg text-sm truncate hover:bg-[var(--bg-hover)]" style={{ color: 'var(--fg-primary)' }} onClick={() => { setAttachment({ id: r.id, name: r.name }); setAttachOpen(false); }}>{r.name}</button></li>)}
                     </ul>
                     <button className="w-full text-left px-2 py-1.5 rounded-lg text-sm flex items-center gap-2 hover:bg-[var(--bg-hover)]" style={{ color: 'var(--accent)' }} onClick={() => fileRef.current?.click()}><Plus size={14} /> Upload a new file</button>
-                    <input ref={fileRef} type="file" accept=".pdf,.doc,.docx" className="hidden" onChange={e => { attachFile(e.target.files?.[0]); e.target.value = ''; }} />
+                    <input ref={fileRef} type="file" accept=".pdf,.docx" className="hidden" onChange={e => { attachFile(e.target.files?.[0]); e.target.value = ''; }} />
                   </div>
                 )}
               </div>
@@ -284,6 +305,7 @@ export default function AIPage() {
           </div>
         </div>
       </section>
+      <CareerToolsModal open={toolsOpen} onClose={() => setToolsOpen(false)} />
     </div>
   );
 }
@@ -291,7 +313,7 @@ export default function AIPage() {
 function Avatar({ assistant }: { assistant?: boolean }) {
   return (
     <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0" style={{ background: assistant ? 'var(--accent)' : 'var(--bg-hover)' }} aria-hidden>
-      {assistant ? <Brain size={16} className="text-white" /> : <User size={16} style={{ color: 'var(--fg-secondary)' }} />}
+      {assistant ? <Brain size={16} className="text-on-accent" /> : <User size={16} style={{ color: 'var(--fg-secondary)' }} />}
     </div>
   );
 }
@@ -310,7 +332,7 @@ function Bubble({ m }: { m: Message }) {
     <div className={`flex gap-3 ${user ? 'flex-row-reverse' : ''}`}>
       <Avatar assistant={!user} />
       <div className="px-4 py-3 text-sm leading-relaxed max-w-[85%] min-w-0"
-        style={{ background: user ? 'var(--accent)' : 'var(--bg-hover)', color: user ? '#fff' : 'var(--fg-primary)', borderRadius: user ? '18px 4px 18px 18px' : '4px 18px 18px 18px' }}>
+        style={{ background: user ? 'var(--accent)' : 'var(--bg-hover)', color: user ? 'var(--accent-fg)' : 'var(--fg-primary)', borderRadius: user ? '18px 4px 18px 18px' : '4px 18px 18px 18px' }}>
         {user ? <p className="whitespace-pre-wrap break-words">{m.content}</p> : (
           <div className="md break-words"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ({ node: _n, ...p }) => <a {...p} target="_blank" rel="noopener noreferrer" /> }}>{m.content}</ReactMarkdown></div>
         )}

@@ -15,6 +15,11 @@ function statusData(prev: ApplicationStatus | null, next: ApplicationStatus) {
   };
 }
 
+async function snapshot(jobId: string) {
+  const job = await prisma.job.findUnique({ where: { id: jobId }, select: { description: true } });
+  return job?.description ? { jobDescriptionSnapshot: job.description.slice(0, 20_000) } : {};
+}
+
 const listInclude = (userId: string) =>
   ({
     job: {
@@ -72,6 +77,8 @@ export const applicationsController = {
           userId: uid(req),
           jobId: job.id,
           ...rest,
+          // Keep the description as it was when applying: postings get edited or taken down
+          jobDescriptionSnapshot: job.description?.slice(0, 20_000) ?? null,
           status,
           appliedAt: rest.appliedAt ?? (status === 'APPLIED' ? new Date() : null),
           statusHistory: { create: { toStatus: status } },
@@ -115,6 +122,7 @@ export const applicationsController = {
           ...(changed ? statusData(existing.status, status) : {}),
           // keep the first applied date unless the client sets one explicitly
           ...(changed && status === 'APPLIED' && existing.appliedAt ? { appliedAt: existing.appliedAt } : {}),
+          ...(changed && status === 'APPLIED' && !existing.jobDescriptionSnapshot ? await snapshot(existing.jobId) : {}),
         },
         include: listInclude(uid(req)),
       });
@@ -201,12 +209,12 @@ export const applicationsController = {
     try {
       const app = await prisma.application.findFirst({ where: { id: param(req, 'id'), userId: uid(req) } });
       if (!app) throw new AppError('Application not found', 404);
-      const { type, scheduledAt, location, meetingUrl, interviewer, notes } = req.body;
+      const { type, scheduledAt, durationMinutes, location, meetingUrl, interviewer, notes } = req.body;
       const interview = await prisma.interview.create({
         data: {
           userId: uid(req), applicationId: app.id, jobId: app.jobId,
-          type, location, meetingUrl, interviewer, notes,
-          scheduledAt: scheduledAt ? new Date(scheduledAt) : null,
+          type, durationMinutes, location, meetingUrl, interviewer, notes,
+          scheduledAt: scheduledAt ?? null,
         },
       });
       res.status(201).json({ success: true, data: interview });

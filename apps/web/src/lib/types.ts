@@ -23,6 +23,8 @@ export interface Job {
   description?: string | null;
   skills: string[];
   applyUrl?: string | null;
+  sourceName?: string | null;
+  indiaEligible?: boolean | null;
   company?: { logo?: string | null; size?: string | null } | null;
   saved: boolean;
   application: { id: string; status: AppStatus } | null;
@@ -78,4 +80,46 @@ export interface ResumeAnalysis {
   sectionScores?: Record<string, number>;
   jobComparison?: { matchScore: number; matchedKeywords: string[]; missingKeywords: string[]; missingSkills: string[]; advice: string[] };
   raw?: string;
+}
+
+export interface AtsCheck { id: string; label: string; passed: boolean; points: number; max: number; tip?: string }
+export interface AtsReport {
+  score: number;
+  checks: AtsCheck[];
+  wordCount: number;
+  skills: string[];
+  keywordMatch?: { score: number; matched: string[]; missing: string[]; against: string };
+}
+
+export type ResumeVersionSource = 'upload' | 'ai_improved' | 'manual' | 'restore';
+export interface ResumeChange { section: string; original: string; improved: string; why: string }
+export interface ResumeVersionSummary {
+  id: string;
+  version: number;
+  label: string | null;
+  source: ResumeVersionSource;
+  atsScore: number | null;
+  changes: string | null;
+  explanations: ResumeChange[] | null;
+  createdAt: string;
+}
+export interface ResumeVersionDetail extends ResumeVersionSummary { text: string | null; isCurrent: boolean }
+export interface ResumeCompare {
+  a: { id: string; version: number; label: string | null; source: ResumeVersionSource; atsScore: number | null; createdAt: string; isCurrent: boolean };
+  b: ResumeCompare['a'];
+  diff: Array<{ type: 'same' | 'added' | 'removed'; text: string }>;
+  stats: { added: number; removed: number; unchanged: number };
+  explanations: ResumeChange[] | null;
+  changes: string | null;
+}
+
+export interface SavedSearch {
+  id: string;
+  name: string;
+  filters: Record<string, string>;
+  alertEnabled: boolean;
+  lastRunAt?: string | null;
+  lastNotifiedAt?: string | null;
+  matches: number;
+  createdAt: string;
 }

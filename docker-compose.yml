@@ -1,33 +1,46 @@
-version: '3.9'
+# Local development stack.
+#   Infrastructure only (then run `npm run dev`):  docker compose up -d postgres redis mailpit
+#   Everything in containers:                      docker compose up -d --build
+# Values come from .env (copy .env.example).  App: http://localhost:8080   Test inbox: http://localhost:8025
+
+x-app-env: &app-env
+  NODE_ENV: production
+  DATABASE_URL: postgresql://${POSTGRES_USER:-careeros}:${POSTGRES_PASSWORD:-careeros_dev_password}@postgres:5432/${POSTGRES_DB:-careeros_dev}
+  REDIS_URL: redis://redis:6379
+  SMTP_HOST: mailpit
+  SMTP_PORT: '1025'
+  SMTP_USER: ''
+  FRONTEND_URL: http://localhost:8080
+  APP_URL: http://localhost:8080
+  CORS_ORIGINS: http://localhost:8080
+  STORAGE_LOCAL_PATH: /app/uploads
+  # Plain-HTTP localhost, so the refresh cookie can't be marked Secure here
+  COOKIE_SECURE: 'false'
 
 services:
-  # ── PostgreSQL ────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
-    container_name: careeros_postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: careeros_dev
-      POSTGRES_USER: careeros
-      POSTGRES_PASSWORD: password
+      POSTGRES_DB: ${POSTGRES_DB:-careeros_dev}
+      POSTGRES_USER: ${POSTGRES_USER:-careeros}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-careeros_dev_password}
     ports:
-      - '5432:5432'
+      - '127.0.0.1:5432:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./prisma/init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U careeros -d careeros_dev']
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # ── Redis ─────────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
-    container_name: careeros_redis
     restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes']
     ports:
-      - '6379:6379'
+      - '127.0.0.1:6379:6379'
     volumes:
       - redis_data:/data
     healthcheck:
@@ -36,66 +49,58 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── Backend API ────────────────────────────────────────────────────────────
+  # Catches every email the app sends (password reset, confirmations, reminders) so you can
+  # read them at http://localhost:8025 without a real mail account.
+  mailpit:
+    image: axllent/mailpit:v1.21
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:1025:1025'
+      - '127.0.0.1:8025:8025'
+
   api:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
-    container_name: careeros_api
+    image: careeros-api:dev
     restart: unless-stopped
-    env_file: .env
-    environment:
-      DATABASE_URL: postgresql://careeros:password@postgres:5432/careeros_dev
-      REDIS_URL: redis://redis:6379
-      NODE_ENV: development
+    env_file:
+      - path: .env
+        required: false
+    environment: *app-env
     ports:
-      - '3001:3001'
+      - '127.0.0.1:3001:3001'
+    volumes:
+      - uploads:/app/uploads
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
-    volumes:
-      - ./uploads:/app/uploads
-      - ./apps/api/src:/app/apps/api/src
-    command: npm run dev --workspace=apps/api
 
-  # ── Workers ───────────────────────────────────────────────────────────────
-  workers:
-    build:
-      context: .
-      dockerfile: workers/Dockerfile
-    container_name: careeros_workers
+  worker:
+    image: careeros-api:dev
+    command: ['worker']
     restart: unless-stopped
-    env_file: .env
-    environment:
-      DATABASE_URL: postgresql://careeros:password@postgres:5432/careeros_dev
-      REDIS_URL: redis://redis:6379
-      NODE_ENV: development
+    env_file:
+      - path: .env
+        required: false
+    environment: *app-env
     depends_on:
-      postgres:
+      api:
         condition: service_healthy
       redis:
         condition: service_healthy
-    volumes:
-      - ./workers/src:/app/workers/src
 
-  # ── Frontend (dev) ─────────────────────────────────────────────────────────
   web:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
-    container_name: careeros_web
     restart: unless-stopped
-    environment:
-      VITE_API_URL: http://localhost:3001/api
     ports:
-      - '5173:5173'
+      - '127.0.0.1:8080:80'
     depends_on:
       - api
-    volumes:
-      - ./apps/web/src:/app/apps/web/src
 
 volumes:
   postgres_data:
   redis_data:
+  uploads:

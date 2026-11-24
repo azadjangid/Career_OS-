@@ -50,7 +50,7 @@ export default function TailorModal({ resume, onClose }: { resume: Resume | null
 
         {r && !r.raw && (
           <>
-            {typeof r.matchScore === 'number' && <p className="text-sm" style={{ color: 'var(--fg-primary)' }}>Overall fit: <strong style={{ color: r.matchScore >= 75 ? '#34D399' : r.matchScore >= 50 ? '#FBBF24' : '#F87171' }}>{Math.round(r.matchScore)}%</strong></p>}
+            {typeof r.matchScore === 'number' && <p className="text-sm" style={{ color: 'var(--fg-primary)' }}>Overall fit: <strong style={{ color: r.matchScore >= 75 ? 'var(--tone-green)' : r.matchScore >= 50 ? 'var(--tone-amber)' : 'var(--tone-red)' }}>{Math.round(r.matchScore)}%</strong></p>}
 
             <div>
               <h3 className="font-display font-semibold mb-2" style={{ color: 'var(--fg-primary)' }}>What already matches</h3>
@@ -68,7 +68,7 @@ export default function TailorModal({ resume, onClose }: { resume: Resume | null
                     <li key={i} className="rounded-xl p-4 space-y-2" style={{ background: 'var(--bg-secondary)' }}>
                       <p className="text-xs font-medium" style={{ color: 'var(--accent)' }}>{e.section}</p>
                       {e.original && <p className="text-sm line-through" style={{ color: 'var(--fg-muted)' }}>{e.original}</p>}
-                      <p className="text-sm flex gap-2" style={{ color: 'var(--fg-primary)' }}><ArrowRight size={14} className="mt-1 shrink-0" style={{ color: '#34D399' }} />{e.suggested}</p>
+                      <p className="text-sm flex gap-2" style={{ color: 'var(--fg-primary)' }}><ArrowRight size={14} className="mt-1 shrink-0" style={{ color: 'var(--tone-green)' }} />{e.suggested}</p>
                       <p className="text-xs" style={{ color: 'var(--fg-secondary)' }}>{e.why}</p>
                     </li>
                   ))}

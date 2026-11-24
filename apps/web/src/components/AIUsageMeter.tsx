@@ -8,7 +8,7 @@ export default function AIUsageMeter() {
   if (!data) return null;
 
   const pct = Math.min(100, Math.round((data.totalTokens / data.budgetTokens) * 100));
-  const color = pct >= 90 ? '#F87171' : pct >= 70 ? '#FBBF24' : 'var(--accent)';
+  const color = pct >= 90 ? 'var(--tone-red)' : pct >= 70 ? 'var(--tone-amber)' : 'var(--accent)';
   const k = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 100_000 ? 0 : 1)}k` : String(n));
 
   return (

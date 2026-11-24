@@ -10,6 +10,8 @@ export const PAGE_TITLES: Record<string, string> = {
   '/resumes': 'Resume Manager',
   '/ai': 'AI Career Agent',
   '/analytics': 'Analytics',
+  '/interview-prep': 'Interview Prep',
+  '/learning': 'Learning',
   '/profile': 'Profile',
   '/settings': 'Settings',
 };

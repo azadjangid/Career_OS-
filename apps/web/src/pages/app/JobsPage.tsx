@@ -3,14 +3,14 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tansta
 import { useSearchParams } from 'react-router-dom';
 import {
   Bookmark, BookmarkCheck, MapPin, Search, SlidersHorizontal, LayoutGrid, List, Sparkles, Loader2,
-  RefreshCw, X, Clock, ExternalLink, Wand2,
+  RefreshCw, X, Clock, ExternalLink, Wand2, Globe2, Bell, BellOff, BookmarkPlus, Trash2,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { apiError, formatSalary, timeAgo } from '@/lib/format';
 import { toast } from '@/store/toast.store';
 import { useCreateApplication, useToggleSaveJob } from '@/hooks/queries';
-import { COMPANY_SIZES, EXPERIENCE_LEVELS, WORK_MODES } from '@/lib/constants';
-import type { Job } from '@/lib/types';
+import { COMPANY_SIZES, EXPERIENCE_LEVELS, JOB_TYPES, SOURCE_FILTERS, WORK_MODES } from '@/lib/constants';
+import type { Job, SavedSearch } from '@/lib/types';
 import { CompanyLogo, MatchBadge, StatusBadge } from '@/components/ui/Bits';
 import { CardSkeleton } from '@/components/ui/Skeleton';
 import EmptyState from '@/components/ui/EmptyState';
@@ -24,10 +24,14 @@ interface Filters {
   experienceLevel: string;
   posted: string;
   companySize: string;
+  jobType: string;
+  source: string;
+  indiaEligible: boolean;
   salaryMin: number; // LPA, 0 = any
   salaryMax: number; // LPA, 50 = any
 }
-const NO_FILTERS: Filters = { location: '', workMode: '', experienceLevel: '', posted: '', companySize: '', salaryMin: 0, salaryMax: 50 };
+const NO_FILTERS: Filters = { location: '', workMode: '', experienceLevel: '', posted: '', companySize: '', jobType: '', source: '', indiaEligible: false, salaryMin: 0, salaryMax: 50 };
+const pretty = (s: string) => s.charAt(0) + s.slice(1).toLowerCase().replace(/_/g, ' ');
 
 function useDebounced<T>(value: T, ms = 300): T {
   const [v, setV] = useState(value);
@@ -62,6 +66,9 @@ export default function JobsPage() {
     experienceLevel: dFilters.experienceLevel || undefined,
     posted: dFilters.posted || undefined,
     companySize: dFilters.companySize || undefined,
+    jobType: dFilters.jobType || undefined,
+    source: dFilters.source || undefined,
+    indiaEligible: dFilters.indiaEligible ? 'true' : undefined,
     salaryMin: dFilters.salaryMin > 0 ? dFilters.salaryMin * 100_000 : undefined,
     salaryMax: dFilters.salaryMax < 50 ? dFilters.salaryMax * 100_000 : undefined,
   }), [dSearch, effectiveSort, tab, dFilters]);
@@ -94,12 +101,32 @@ export default function JobsPage() {
   });
 
   const fetchRemote = useMutation({
-    mutationFn: async () => (await api.post('/jobs/fetch', { search: search.trim() || undefined })).data.data as { created: number; fetched: number },
-    onSuccess: r => { toast.success(r.created ? `Added ${r.created} new remote jobs` : 'No new jobs right now'); qc.invalidateQueries({ queryKey: ['jobs'] }); qc.invalidateQueries({ queryKey: ['dashboard'] }); },
+    mutationFn: async () => (await api.post('/jobs/fetch', { search: search.trim() || undefined })).data.data as { created: number; fetched: number; duplicates?: number; bySource?: Array<{ source: string; error?: string }> },
+    onSuccess: r => {
+      const dupes = r.duplicates ? ` (${r.duplicates} duplicate${r.duplicates === 1 ? '' : 's'} of jobs you already have skipped)` : '';
+      toast.success((r.created ? `Added ${r.created} new jobs` : 'No new jobs right now') + dupes);
+      const failed = (r.bySource ?? []).filter(s => s.error);
+      if (failed.length) toast.info(`Some sources didn’t respond: ${failed.map(s => s.source).join(', ')}`);
+      qc.invalidateQueries({ queryKey: ['jobs'] });
+      qc.invalidateQueries({ queryKey: ['dashboard'] });
+    },
     onError: e => toast.error(apiError(e, 'Could not fetch jobs')),
   });
 
-  const activeFilterCount = Object.entries(filters).filter(([k, v]) => (k === 'salaryMin' ? v > 0 : k === 'salaryMax' ? v < 50 : !!v)).length;
+  const activeFilterCount = Object.entries(filters).filter(([k, v]) => (k === 'salaryMin' ? (v as number) > 0 : k === 'salaryMax' ? (v as number) < 50 : !!v)).length;
+  // Filters as the API stores them for a saved search (no sort or paging)
+  const { sort: _sort, ...searchFilters } = queryParams;
+  const applySearch = (f: Record<string, string>) => {
+    setTab(f['saved'] === 'true' ? 'saved' : 'all');
+    setSearch(f['q'] ?? '');
+    setFilters({
+      ...NO_FILTERS,
+      location: f['location'] ?? '', workMode: f['workMode'] ?? '', experienceLevel: f['experienceLevel'] ?? '', posted: f['posted'] ?? '',
+      companySize: f['companySize'] ?? '', jobType: f['jobType'] ?? '', source: f['source'] ?? '', indiaEligible: f['indiaEligible'] === 'true',
+      salaryMin: f['salaryMin'] ? Math.round(Number(f['salaryMin']) / 100_000) : 0,
+      salaryMax: f['salaryMax'] ? Math.round(Number(f['salaryMax']) / 100_000) : 50,
+    });
+  };
 
   const filterPanel = (
     <FilterPanel filters={filters} onChange={setFilters} onReset={() => setFilters(NO_FILTERS)} />
@@ -176,10 +203,12 @@ export default function JobsPage() {
           <div className="flex items-center gap-3">
             <span className="text-xs" style={{ color: 'var(--fg-muted)' }}>{jobsQuery.isLoading ? '' : `${total} job${total === 1 ? '' : 's'}`}</span>
             <button className="btn-secondary text-sm py-1.5" onClick={() => fetchRemote.mutate()} disabled={fetchRemote.isPending}>
-              {fetchRemote.isPending ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} Fetch remote jobs
+              {fetchRemote.isPending ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} Fetch new jobs
             </button>
           </div>
         </div>
+
+        <SavedSearches current={searchFilters} canSave={!!(search.trim() || activeFilterCount || tab === 'saved')} onApply={applySearch} />
 
         {tab === 'recommended' && (
           <p className="text-xs" style={{ color: 'var(--fg-muted)' }}>Ranked by how many required skills match your profile and resume. Hover a score for the explanation, or run an AI analysis for a deeper read.</p>
@@ -192,9 +221,9 @@ export default function JobsPage() {
         ) : jobs.length === 0 ? (
           <EmptyState art={tab === 'saved' ? 'jobs' : 'search'}
             title={tab === 'saved' ? 'No saved jobs yet' : search || activeFilterCount ? 'No jobs match your filters' : 'No jobs yet'}
-            description={tab === 'saved' ? 'Tap the bookmark on any job to keep it here.' : search || activeFilterCount ? 'Try removing a filter or searching for something broader.' : 'Fetch live remote jobs, or add one yourself with the + button.'}
+            description={tab === 'saved' ? 'Tap the bookmark on any job to keep it here.' : search || activeFilterCount ? 'Try removing a filter or searching for something broader.' : 'Fetch jobs from your sources, or add one yourself with the + button.'}
             action={<>{(search || activeFilterCount > 0) && <button className="btn-secondary" onClick={() => { setSearch(''); setFilters(NO_FILTERS); }}>Clear filters</button>}
-              <button className="btn-primary" onClick={() => fetchRemote.mutate()}>Fetch remote jobs</button></>} />
+              <button className="btn-primary" onClick={() => fetchRemote.mutate()}>Fetch new jobs</button></>} />
         ) : (
           <div className={view === 'grid' ? 'grid sm:grid-cols-2 xl:grid-cols-3 gap-4' : 'space-y-3'}>
             {jobs.map(j => <JobCard key={j.id} job={j} layout={view} />)}
@@ -221,12 +250,28 @@ function FilterPanel({ filters, onChange, onReset }: { filters: Filters; onChang
       <Field label="Location"><input className="input" placeholder="City or country" value={filters.location} onChange={e => set('location', e.target.value)} aria-label="Location" /></Field>
       <Field label="Work mode">
         <select className="input" value={filters.workMode} onChange={e => set('workMode', e.target.value)} aria-label="Work mode">
-          <option value="">Any</option>{WORK_MODES.map(m => <option key={m} value={m}>{m.charAt(0) + m.slice(1).toLowerCase()}</option>)}
+          <option value="">Any</option>{WORK_MODES.map(m => <option key={m} value={m}>{pretty(m)}</option>)}
         </select>
       </Field>
       <Field label="Experience level">
         <select className="input" value={filters.experienceLevel} onChange={e => set('experienceLevel', e.target.value)} aria-label="Experience level">
-          <option value="">Any</option>{EXPERIENCE_LEVELS.map(m => <option key={m} value={m}>{m.charAt(0) + m.slice(1).toLowerCase()}</option>)}
+          <option value="">Any</option>{EXPERIENCE_LEVELS.map(m => <option key={m} value={m}>{pretty(m)}</option>)}
+        </select>
+      </Field>
+      <Field label="Job type">
+        <select className="input" value={filters.jobType} onChange={e => set('jobType', e.target.value)} aria-label="Job type">
+          <option value="">Any</option>{JOB_TYPES.map(m => <option key={m} value={m}>{pretty(m)}</option>)}
+        </select>
+      </Field>
+      <div className="mb-4">
+        <label className="flex items-start gap-2 text-sm cursor-pointer" style={{ color: 'var(--fg-primary)' }}>
+          <input type="checkbox" className="mt-0.5" checked={filters.indiaEligible} onChange={e => set('indiaEligible', e.target.checked)} />
+          <span>Open to candidates in India<span className="block text-xs" style={{ color: 'var(--fg-muted)' }}>Jobs in India, plus remote jobs that say they hire worldwide or in Asia</span></span>
+        </label>
+      </div>
+      <Field label="Source">
+        <select className="input" value={filters.source} onChange={e => set('source', e.target.value)} aria-label="Job source">
+          <option value="">All sources</option>{SOURCE_FILTERS.map(m => <option key={m} value={m}>{m}</option>)}
         </select>
       </Field>
       <Field label="Date posted">
@@ -283,10 +328,18 @@ function JobCard({ job, layout }: { job: Job; layout: 'grid' | 'list' }) {
           <p className="text-xs mt-0.5" style={{ color: 'var(--fg-secondary)' }}>{job.companyName}</p>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-xs" style={{ color: 'var(--fg-muted)' }}>
             {job.location && <span className="flex items-center gap-1"><MapPin size={12} />{job.location}</span>}
-            {job.postedAt && <span className="flex items-center gap-1"><Clock size={12} />{timeAgo(job.postedAt)}</span>}
+            {job.postedAt && <span className="flex items-center gap-1" title={`Posted ${new Date(job.postedAt).toLocaleDateString()}`}><Clock size={12} />Posted {timeAgo(job.postedAt)}</span>}
+            {job.sourceName && <span title="Where this job came from">via {job.sourceName}</span>}
           </div>
           <div className="flex flex-wrap gap-1.5 mt-2">
             {job.workMode && <span className="badge badge-blue">{job.workMode.charAt(0) + job.workMode.slice(1).toLowerCase()}</span>}
+            {job.experienceLevel && <span className="badge badge-muted">{pretty(job.experienceLevel)}</span>}
+            {job.workMode === 'REMOTE' && job.location && !/india/i.test(job.location) && (
+              job.indiaEligible === true ? <span className="badge badge-green" title="The posting says it hires in India, Asia or worldwide"><Globe2 size={11} className="inline mr-0.5" />India-eligible</span>
+                : job.indiaEligible === false ? <span className="badge badge-red" title="The posting limits hiring to other regions">Not open to India</span>
+                : <span className="badge badge-amber" title="The posting doesn’t say where it hires. Check before applying.">Eligibility unclear</span>
+            )}
+            {job.workMode === 'REMOTE' && !job.location && job.indiaEligible == null && <span className="badge badge-amber" title="The posting doesn’t say where it hires. Check before applying.">Eligibility unclear</span>}
             {salary && <span className="badge badge-green">{salary}</span>}
             {job.skills.slice(0, layout === 'grid' ? 3 : 4).map(s => <span key={s} className="badge badge-muted">{s}</span>)}
           </div>
@@ -313,5 +366,59 @@ function JobCard({ job, layout }: { job: Job; layout: 'grid' | 'list' }) {
         </div>
       </div>
     </article>
+  );
+}
+
+/** Named searches the user saved, with live match counts and an optional alert for new matches. */
+function SavedSearches({ current, canSave, onApply }: { current: Record<string, unknown>; canSave: boolean; onApply: (f: Record<string, string>) => void }) {
+  const qc = useQueryClient();
+  const [naming, setNaming] = useState(false);
+  const [name, setName] = useState('');
+  const { data: searches } = useQuery({ queryKey: ['job-searches'], queryFn: async () => (await api.get('/jobs/searches')).data.data as SavedSearch[] });
+  const refresh = () => qc.invalidateQueries({ queryKey: ['job-searches'] });
+  const create = useMutation({
+    mutationFn: (alertEnabled: boolean) => api.post('/jobs/searches', { name: name.trim(), filters: current, alertEnabled }),
+    onSuccess: (_d, alert) => { toast.success(alert ? 'Search saved. You’ll be notified about new matching jobs.' : 'Search saved'); setNaming(false); setName(''); refresh(); },
+    onError: e => toast.error(apiError(e, 'Could not save the search')),
+  });
+  const toggle = useMutation({
+    mutationFn: (s: SavedSearch) => api.put(`/jobs/searches/${s.id}`, { alertEnabled: !s.alertEnabled }),
+    onSuccess: (_d, s) => { toast.success(s.alertEnabled ? 'Alert turned off' : 'Alert on: new matching jobs will show in your notifications'); refresh(); },
+    onError: e => toast.error(apiError(e, 'Could not update the alert')),
+  });
+  const del = useMutation({
+    mutationFn: (id: string) => api.delete(`/jobs/searches/${id}`),
+    onSuccess: () => { toast.success('Saved search removed'); refresh(); },
+    onError: e => toast.error(apiError(e, 'Could not remove the search')),
+  });
+
+  if (!searches?.length && !canSave) return null;
+  return (
+    <div className="flex items-center gap-2 flex-wrap" aria-label="Saved searches">
+      {searches?.map(s => (
+        <span key={s.id} className="inline-flex items-center rounded-full text-xs" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+          <button className="pl-3 pr-1 py-1" onClick={() => onApply(s.filters)} title="Apply this search" style={{ color: 'var(--fg-primary)' }}>
+            {s.name} <span style={{ color: 'var(--fg-muted)' }}>· {s.matches}</span>
+          </button>
+          <button className="p-1" onClick={() => toggle.mutate(s)} aria-label={s.alertEnabled ? `Turn off alert for ${s.name}` : `Alert me about new jobs for ${s.name}`} title={s.alertEnabled ? 'Alert on' : 'Alert off'}
+            style={{ color: s.alertEnabled ? 'var(--accent)' : 'var(--fg-muted)' }}>
+            {s.alertEnabled ? <Bell size={12} /> : <BellOff size={12} />}
+          </button>
+          <button className="p-1 pr-2" onClick={() => del.mutate(s.id)} aria-label={`Delete saved search ${s.name}`} style={{ color: 'var(--fg-muted)' }}><Trash2 size={12} /></button>
+        </span>
+      ))}
+      {canSave && !naming && (
+        <button className="btn-ghost text-xs px-2 py-1" onClick={() => setNaming(true)}><BookmarkPlus size={13} /> Save this search</button>
+      )}
+      {naming && (
+        <form className="flex items-center gap-1.5" onSubmit={e => { e.preventDefault(); if (name.trim()) create.mutate(false); }}>
+          <label className="sr-only" htmlFor="ss-name">Search name</label>
+          <input id="ss-name" autoFocus className="input py-1 text-xs w-44" placeholder="e.g. Remote React roles" value={name} onChange={e => setName(e.target.value)} maxLength={80} />
+          <button className="btn-secondary text-xs px-2 py-1" disabled={!name.trim() || create.isPending}>Save</button>
+          <button type="button" className="btn-primary text-xs px-2 py-1" disabled={!name.trim() || create.isPending} onClick={() => create.mutate(true)}><Bell size={12} /> Save with alert</button>
+          <button type="button" className="btn-ghost p-1" aria-label="Cancel" onClick={() => setNaming(false)}><X size={14} /></button>
+        </form>
+      )}
+    </div>
   );
 }

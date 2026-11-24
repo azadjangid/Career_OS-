@@ -6,7 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import {
   User, Briefcase, Brain, ShieldCheck, Plug, KeyRound, Palette, Bell, Lock, Camera, Loader2, Download, Trash2, Copy, Check,
-  RefreshCw, Linkedin, Github, Database, X,
+  RefreshCw, Linkedin, Github, Database, X, Rss,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { apiError, downloadBlob, initials } from '@/lib/format';
@@ -19,8 +19,8 @@ import { ConfirmDialog, Modal } from '@/components/ui/Modal';
 import { CardSkeleton } from '@/components/ui/Skeleton';
 
 const NAV = [
-  ['profile', 'Profile', User], ['job-prefs', 'Job preferences', Briefcase], ['ai', 'AI preferences', Brain], ['notifications', 'Notifications', Bell],
-  ['appearance', 'Appearance', Palette], ['integrations', 'Integrations', Plug], ['api-key', 'API key', KeyRound], ['security', 'Password', Lock], ['data', 'Data & privacy', ShieldCheck],
+  ['profile', 'Profile', User], ['job-prefs', 'Job preferences', Briefcase], ['ai', 'AI preferences', Brain], ['notifications', 'Notifications & automation', Bell],
+  ['job-sources', 'Job sources', Rss], ['appearance', 'Appearance', Palette], ['integrations', 'Integrations', Plug], ['api-key', 'API key', KeyRound], ['security', 'Password', Lock], ['data', 'Data & privacy', ShieldCheck],
 ] as const;
 
 export default function SettingsPage() {
@@ -38,7 +38,7 @@ export default function SettingsPage() {
       <div className="flex-1 min-w-0 space-y-6">
         {isLoading ? <><CardSkeleton lines={4} /><CardSkeleton lines={4} /></> : (
           <>
-            <ProfileSection /><JobPrefsSection /><AISection /><NotificationsSection /><AppearanceSection />
+            <ProfileSection /><JobPrefsSection /><AISection /><NotificationsSection /><JobSourcesSection /><AppearanceSection />
             <IntegrationsSection /><ApiKeySection /><PasswordSection /><DataSection />
           </>
         )}
@@ -51,8 +51,8 @@ function Section({ id, title, icon: Icon, children, danger }: { id: string; titl
   return (
     <section id={id} className="card space-y-4 scroll-mt-4" style={danger ? { borderColor: '#7F1D1D' } : undefined} aria-labelledby={`${id}-h`}>
       <div className="flex items-center gap-3">
-        <div className="w-9 h-9 rounded-lg flex items-center justify-center" style={{ background: danger ? '#7F1D1D33' : 'var(--accent-dim)' }}><span style={{ color: danger ? '#F87171' : 'var(--accent)' }}><Icon size={18} /></span></div>
-        <h2 id={`${id}-h`} className="font-display font-semibold" style={{ color: danger ? '#F87171' : 'var(--fg-primary)' }}>{title}</h2>
+        <div className="w-9 h-9 rounded-lg flex items-center justify-center" style={{ background: danger ? '#7F1D1D33' : 'var(--accent-dim)' }}><span style={{ color: danger ? 'var(--tone-red)' : 'var(--accent)' }}><Icon size={18} /></span></div>
+        <h2 id={`${id}-h`} className="font-display font-semibold" style={{ color: danger ? 'var(--tone-red)' : 'var(--fg-primary)' }}>{title}</h2>
       </div>
       {children}
     </section>
@@ -138,7 +138,7 @@ function ProfileSection() {
       <form onSubmit={handleSubmit(d => save.mutate(d))} className="space-y-4">
         <div className="flex items-center gap-4">
           <div className="relative">
-            {avatar ? <img src={avatar} alt="Your avatar" className="w-16 h-16 rounded-full object-cover" /> : <div className="w-16 h-16 rounded-full flex items-center justify-center text-xl font-bold text-white" style={{ background: 'var(--accent)' }} aria-hidden>{initials(user?.name ?? '')}</div>}
+            {avatar ? <img src={avatar} alt="Your avatar" className="w-16 h-16 rounded-full object-cover" /> : <div className="w-16 h-16 rounded-full flex items-center justify-center text-xl font-bold text-on-accent" style={{ background: 'var(--accent)' }} aria-hidden>{initials(user?.name ?? '')}</div>}
             <button type="button" onClick={() => fileRef.current?.click()} className="absolute -bottom-1 -right-1 w-7 h-7 rounded-full flex items-center justify-center" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }} aria-label="Change avatar"><Camera size={13} /></button>
             <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={e => { onAvatar(e.target.files?.[0]); e.target.value = ''; }} />
           </div>
@@ -172,7 +172,7 @@ function ProfileSection() {
 }
 
 function Field({ label, error, children, className }: { label: string; error?: string; children: React.ReactNode; className?: string }) {
-  return <div className={className}><label className="label">{label}</label>{children}{error && <p className="text-xs mt-1" style={{ color: '#F87171' }} role="alert">{error}</p>}</div>;
+  return <div className={className}><label className="label">{label}</label>{children}{error && <p className="text-xs mt-1" style={{ color: 'var(--tone-red)' }} role="alert">{error}</p>}</div>;
 }
 
 // ── Job preferences ─────────────────────────────────────────────────────────
@@ -220,6 +220,7 @@ function AISection() {
   const save = (extras: Record<string, unknown>) => update.mutate({ extras }, { onSuccess: () => toast.success('Saved') });
   return (
     <Section id="ai" title="AI preferences" icon={Brain}>
+      <AIStatus />
       <div>
         <label className="label" htmlFor="ai-model">Default AI model</label>
         <select id="ai-model" className="input" value={x.aiModel ?? s?.defaultModel ?? ''} onChange={e => save({ aiModel: e.target.value })}>
@@ -238,20 +239,152 @@ function AISection() {
   );
 }
 
+interface AIHealth {
+  provider: string; configured: boolean; keyVar: string; keyProblem: string | null; model: string; userModel: string;
+  fallback: string | null; lastSuccessAt: string | null; lastError: { code: string; message: string; at: string } | null;
+}
+type TestResult = { ok: true; provider: string; model: string; latencyMs: number } | { ok: false; code: string; message: string };
+
+/** Shows whether the server's AI provider is set up and lets the user prove it with one real call. */
+function AIStatus() {
+  const { data: h, refetch } = useQuery({ queryKey: ['ai-health'], queryFn: async () => (await api.get('/ai/health')).data.data as AIHealth });
+  const test = useMutation({
+    mutationFn: async () => (await api.post('/ai/test-connection')).data.data as TestResult,
+    onSettled: () => refetch(),
+    onError: e => toast.error(apiError(e, 'Could not run the test')),
+  });
+  if (!h) return <div className="h-16 rounded-xl animate-pulse" style={{ background: 'var(--bg-tertiary)' }} aria-hidden />;
+  const r = test.data;
+  const providerName = h.provider === 'nvidia' ? 'NVIDIA' : 'Anthropic';
+  return (
+    <div className="rounded-xl p-3 space-y-2" style={{ border: '1px solid var(--border)' }} aria-live="polite">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-sm" style={{ color: 'var(--fg-primary)' }}>
+          <span className="font-medium">{providerName}</span>{' · '}
+          {h.configured ? <span style={{ color: 'var(--tone-green)' }}>key set</span> : <span style={{ color: 'var(--tone-red)' }}>not configured</span>}
+          {h.fallback && <span style={{ color: 'var(--fg-muted)' }}> · falls back to {h.fallback === 'nvidia' ? 'NVIDIA' : 'Anthropic'}</span>}
+        </div>
+        <button type="button" className="btn-secondary text-sm" onClick={() => test.mutate()} disabled={test.isPending || !h.configured}>
+          {test.isPending ? <><Loader2 size={14} className="animate-spin" /> Testing…</> : 'Test connection'}
+        </button>
+      </div>
+      {!h.configured && h.keyProblem && <p className="text-xs" style={{ color: 'var(--fg-secondary)' }}>{h.keyProblem}</p>}
+      {r?.ok && <p className="text-xs" style={{ color: 'var(--tone-green)' }} role="status">Connected: {r.model} answered in {(r.latencyMs / 1000).toFixed(1)}s.</p>}
+      {r && !r.ok && <p className="text-xs" style={{ color: 'var(--tone-red)' }} role="alert">{r.message}</p>}
+      {!r && h.lastError && <p className="text-xs" style={{ color: 'var(--fg-muted)' }}>Last error: {h.lastError.message}</p>}
+    </div>
+  );
+}
+
 // ── Notifications ───────────────────────────────────────────────────────────
 function NotificationsSection() {
   const { data: s } = useSettings();
   const update = useUpdateSettings();
-  const items = [
-    ['emailJobAlerts', 'New job matches', 'Email me when jobs match my profile'],
-    ['emailApplicationUpdates', 'Application updates', 'Status changes and interview invites'],
-    ['emailInterviewReminders', 'Interview reminders', 'Reminders before scheduled interviews'],
-    ['emailWeeklySummary', 'Weekly digest', 'A summary of my job search activity'],
-  ] as const;
+  const save = (patch: Record<string, unknown>, msg = 'Saved') => update.mutate(patch, { onSuccess: () => toast.success(msg) });
+  const paused = s?.automationPaused ?? false;
+  const groups: Array<{ title: string; items: Array<readonly [keyof NonNullable<typeof s>, string, string, boolean]> }> = [
+    { title: 'In the app', items: [
+      ['inAppJobAlerts', 'New job alerts', 'Saved searches with an alert, and jobs found by automatic fetching', true],
+      ['dailySummary', 'Daily summary', 'Each morning: new jobs, strong matches, follow-ups due and upcoming interviews', true],
+      ['weeklyReport', 'Weekly progress report', 'Every Monday: applications, replies and interviews compared with the week before', true],
+      ['resumeNudges', 'Resume tips', 'An occasional nudge when your resume scores low or hasn’t been updated in months', true],
+    ] },
+    { title: 'By email', items: [
+      ['emailInterviewReminders', 'Interview and follow-up reminders', 'A morning email on days with an interview in the next 24 hours or a follow-up due', true],
+      ['emailJobAlerts', 'New job alerts', 'Email me when a saved search or automatic fetching finds new jobs', true],
+      ['emailDailySummary', 'Daily summary', 'An email copy of the daily summary', false],
+      ['emailWeeklySummary', 'Weekly progress report', 'An email copy of the Monday report', false],
+    ] },
+  ];
   return (
-    <Section id="notifications" title="Notifications" icon={Bell}>
-      <div>{items.map(([k, label, desc]) => <Toggle key={k} label={label} desc={desc} checked={s?.[k] ?? false} onChange={v => update.mutate({ [k]: v }, { onSuccess: () => toast.success('Saved') })} />)}</div>
-      <p className="text-xs" style={{ color: 'var(--fg-muted)' }}>Email delivery needs SMTP configured on the server.</p>
+    <Section id="notifications" title="Notifications & automation" icon={Bell}>
+      <div className="rounded-xl p-3 mb-4" style={{ background: paused ? 'rgba(251,191,36,0.1)' : 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+        <Toggle label={paused ? 'Automation is paused' : 'Automation is on'} desc={paused ? 'No scheduled alerts, summaries, reminders, emails or automatic job fetches until you turn it back on.' : 'Turn off to pause every scheduled alert, summary, reminder and automatic job fetch at once.'}
+          checked={!paused} onChange={v => save({ automationPaused: !v }, v ? 'Automation resumed' : 'Automation paused')} />
+      </div>
+      {groups.map(g => (
+        <div key={g.title} className="mb-3">
+          <p className="label mt-2">{g.title}</p>
+          {g.items.map(([k, label, desc, dflt]) => (
+            <Toggle key={String(k)} label={label} desc={desc} disabled={paused} checked={(s?.[k] as boolean | undefined) ?? dflt} onChange={v => save({ [k]: v })} />
+          ))}
+        </div>
+      ))}
+      <label className="flex items-center justify-between gap-4 py-2.5 text-sm" style={{ color: 'var(--fg-primary)' }}>
+        <span>Strong match threshold<span className="block text-xs" style={{ color: 'var(--fg-muted)' }}>The daily summary highlights jobs at or above this skills match</span></span>
+        <select className="input w-24" value={s?.jobAlertMinMatchScore ?? 70} disabled={paused} onChange={e => save({ jobAlertMinMatchScore: Number(e.target.value) })}>
+          {[50, 60, 70, 80, 90].map(n => <option key={n} value={n}>{n}%</option>)}
+        </select>
+      </label>
+      <p className="text-xs mt-2" style={{ color: 'var(--fg-muted)' }}>Emails go only to a confirmed address. CareerOS never submits an application or messages an employer for you: automation only notifies you.</p>
+    </Section>
+  );
+}
+
+interface SourceInfo { id: string; label: string; note: string; available: boolean; needsCompanies?: boolean }
+interface SourceSettings { sources: string[]; greenhouse: string[]; lever: string[]; autoFetch: boolean }
+
+const parseSlugs = (v: string) => v.split(/[\s,]+/).map(x => x.trim().toLowerCase()).filter(Boolean);
+
+function JobSourcesSection() {
+  const qc = useQueryClient();
+  const update = useUpdateSettings();
+  const { data } = useQuery({
+    queryKey: ['job-sources'],
+    queryFn: async () => (await api.get('/jobs/sources')).data.data as { sources: SourceInfo[]; settings: SourceSettings },
+  });
+  const [boards, setBoards] = useState({ greenhouse: '', lever: '' });
+  useEffect(() => {
+    if (data) setBoards({ greenhouse: data.settings.greenhouse.join(', '), lever: data.settings.lever.join(', ') });
+  }, [data]);
+
+  if (!data) return null;
+  const chosen = data.settings.sources;
+  const save = (extras: Record<string, unknown>, msg = 'Saved') =>
+    update.mutate({ extras }, { onSuccess: () => { toast.success(msg); qc.invalidateQueries({ queryKey: ['job-sources'] }); } });
+  const toggle = (id: string) => {
+    const next = chosen.includes(id) ? chosen.filter(x => x !== id) : [...chosen, id];
+    if (!next.length) { toast.error('Keep at least one source'); return; }
+    save({ jobSources: next });
+  };
+  const saveBoards = () => save({ companyBoards: { greenhouse: parseSlugs(boards.greenhouse), lever: parseSlugs(boards.lever) } }, 'Company boards saved');
+
+  return (
+    <Section id="job-sources" title="Job sources" icon={Rss}>
+      <p className="text-sm" style={{ color: 'var(--fg-secondary)' }}>“Fetch new jobs” on the Jobs page pulls from the sources you tick here.</p>
+      <div className="space-y-2">
+        {data.sources.map(src => {
+          const on = chosen.includes(src.id);
+          return (
+            <label key={src.id} className={`flex items-center gap-3 p-3 rounded-lg ${src.available ? 'cursor-pointer' : 'opacity-60'}`} style={{ background: 'var(--bg-secondary)', border: `1px solid ${on ? 'var(--border-accent)' : 'var(--border)'}` }}>
+              <input type="checkbox" checked={on} disabled={!src.available} onChange={() => toggle(src.id)} className="w-4 h-4 accent-[var(--accent)]" />
+              <div className="flex-1">
+                <p className="text-sm font-medium" style={{ color: 'var(--fg-primary)' }}>{src.label}</p>
+                <p className="text-xs" style={{ color: 'var(--fg-muted)' }}>{src.note}</p>
+              </div>
+              {!src.available && <span className="badge badge-muted">Not set up</span>}
+            </label>
+          );
+        })}
+      </div>
+      {(chosen.includes('greenhouse') || chosen.includes('lever')) && (
+        <div className="space-y-3">
+          <p className="text-xs" style={{ color: 'var(--fg-muted)' }}>
+            Use the company's board name from its careers link, e.g. boards.greenhouse.io/<strong>postman</strong> or jobs.lever.co/<strong>plaid</strong>. Separate with commas, up to 15 each.
+          </p>
+          {chosen.includes('greenhouse') && (
+            <div><label className="label" htmlFor="gh-boards">Greenhouse companies</label>
+              <input id="gh-boards" className="input" placeholder="postman, razorpay" value={boards.greenhouse} onChange={e => setBoards(b => ({ ...b, greenhouse: e.target.value }))} /></div>
+          )}
+          {chosen.includes('lever') && (
+            <div><label className="label" htmlFor="lever-boards">Lever companies</label>
+              <input id="lever-boards" className="input" placeholder="plaid, cred" value={boards.lever} onChange={e => setBoards(b => ({ ...b, lever: e.target.value }))} /></div>
+          )}
+          <button className="btn-secondary" onClick={saveBoards} disabled={update.isPending}>Save company boards</button>
+        </div>
+      )}
+      <Toggle label="Fetch new jobs automatically" desc="Every 6 hours, using your first target role as the search. New jobs show up in the bell and, if you like, by email."
+        checked={data.settings.autoFetch} onChange={v => save({ autoFetchJobs: v })} />
     </Section>
   );
 }
@@ -337,7 +470,7 @@ function ApiKeySection() {
         </code>
         {fresh && <button className="btn-secondary" onClick={copy}>{copied ? <Check size={14} /> : <Copy size={14} />} {copied ? 'Copied' : 'Copy'}</button>}
       </div>
-      {fresh && <p className="text-xs" style={{ color: '#FBBF24' }}>Copy it now — for security it won’t be shown again.</p>}
+      {fresh && <p className="text-xs" style={{ color: 'var(--tone-amber)' }}>Copy it now — for security it won’t be shown again.</p>}
       <div className="flex gap-2">
         <button className="btn-primary" onClick={() => (has ? setConfirm(true) : gen.mutate())} disabled={gen.isPending}>{gen.isPending ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} {has ? 'Regenerate' : 'Generate key'}</button>
         {has && <button className="btn-secondary" onClick={() => revoke.mutate()} disabled={revoke.isPending}>Revoke</button>}
@@ -400,7 +533,7 @@ function DataSection() {
       <Section id="data" title="Data & privacy" icon={Database}>
         <Row title="Load demo data" desc="Adds 35 sample jobs and 20 applications with history, plus sample AI usage so every chart has something to show." action={<div className="flex gap-2"><button className="btn-secondary" onClick={() => loadDemo.mutate()} disabled={loadDemo.isPending}>{loadDemo.isPending && <Loader2 size={14} className="animate-spin" />} Load</button><button className="btn-ghost" onClick={() => removeDemo.mutate()} disabled={removeDemo.isPending}>Remove</button></div>} />
         <Row title="Export my data" desc="Download everything we store about you as JSON (passwords and tokens excluded)." action={<button className="btn-secondary" onClick={exportAll} disabled={exporting}>{exporting ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />} Export</button>} />
-        <Row title="Delete all application data" desc="Removes jobs, applications, interviews, cover letters and matches. Your account, profile and resumes stay." action={<button className="btn-secondary" style={{ color: '#F87171' }} onClick={() => setDlg('data')}><Trash2 size={14} /> Delete data</button>} />
+        <Row title="Delete all application data" desc="Removes jobs, applications, interviews, cover letters and matches. Your account, profile and resumes stay." action={<button className="btn-secondary" style={{ color: 'var(--tone-red)' }} onClick={() => setDlg('data')}><Trash2 size={14} /> Delete data</button>} />
       </Section>
 
       <Section id="danger" title="Danger zone" icon={Trash2} danger>
@@ -412,7 +545,7 @@ function DataSection() {
         <p className="text-sm mb-4" style={{ color: 'var(--fg-secondary)' }}>
           {dlg === 'account' ? 'Your profile, resumes, applications, chats and settings will be permanently deleted.' : 'All jobs, applications, interviews, cover letters and matches will be permanently deleted.'}
         </p>
-        <label className="label" htmlFor="del-confirm">Type <span className="font-mono" style={{ color: '#F87171' }}>DELETE</span> to confirm</label>
+        <label className="label" htmlFor="del-confirm">Type <span className="font-mono" style={{ color: 'var(--tone-red)' }}>DELETE</span> to confirm</label>
         <input id="del-confirm" className="input mb-4" value={typed} onChange={e => setTyped(e.target.value)} autoComplete="off" />
         <div className="flex justify-end gap-2">
           <button className="btn-secondary" onClick={close}>Cancel</button>

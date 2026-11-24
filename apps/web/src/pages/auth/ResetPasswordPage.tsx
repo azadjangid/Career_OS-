@@ -23,7 +23,7 @@ export default function ResetPasswordPage() {
       <div className="w-full max-w-md">
         <div className="flex items-center justify-center gap-3 mb-8">
           <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: 'var(--accent)' }}>
-            <Zap size={20} className="text-white" />
+            <Zap size={20} className="text-on-accent" />
           </div>
           <span className="font-display font-bold text-2xl" style={{ color: 'var(--fg-primary)' }}>CareerOS</span>
         </div>
@@ -33,7 +33,7 @@ export default function ResetPasswordPage() {
           <p className="text-sm mb-6" style={{ color: 'var(--fg-secondary)' }}>Choose a strong new password</p>
 
           {!token && (
-            <div className="flex items-center gap-2 p-3 rounded-lg mb-4 text-sm" style={{ background: 'rgba(248,113,113,0.1)', color: '#F87171' }}>
+            <div className="flex items-center gap-2 p-3 rounded-lg mb-4 text-sm" style={{ background: 'rgba(248,113,113,0.1)', color: 'var(--tone-red)' }}>
               <AlertCircle size={16} /> Invalid or missing reset token
             </div>
           )}
@@ -45,7 +45,7 @@ export default function ResetPasswordPage() {
                 <Lock size={16} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--fg-muted)' }} />
                 <input {...register('password')} type="password" placeholder="Min 8 chars" className="input pl-9" />
               </div>
-              {errors.password && <p className="text-xs mt-1" style={{ color: '#F87171' }}>{errors.password.message}</p>}
+              {errors.password && <p className="text-xs mt-1" style={{ color: 'var(--tone-red)' }}>{errors.password.message}</p>}
             </div>
             <div>
               <label className="label">Confirm password</label>
@@ -53,7 +53,7 @@ export default function ResetPasswordPage() {
                 <Lock size={16} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--fg-muted)' }} />
                 <input {...register('confirm')} type="password" placeholder="••••••••" className="input pl-9" />
               </div>
-              {errors.confirm && <p className="text-xs mt-1" style={{ color: '#F87171' }}>{errors.confirm.message}</p>}
+              {errors.confirm && <p className="text-xs mt-1" style={{ color: 'var(--tone-red)' }}>{errors.confirm.message}</p>}
             </div>
             <button type="submit" disabled={reset.isPending || !token} className="btn-primary w-full justify-center py-2.5">
               {reset.isPending ? 'Resetting...' : 'Reset password'}

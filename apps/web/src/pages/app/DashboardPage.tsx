@@ -2,19 +2,26 @@ import type { LucideIcon } from 'lucide-react';
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { Briefcase, FileText, TrendingUp, Send, Target, ChevronRight, Quote, UserCircle2 } from 'lucide-react';
+import { Briefcase, FileText, TrendingUp, Send, Target, ChevronRight, Quote, UserCircle2, CalendarClock, Award, Lightbulb, Activity, Video } from 'lucide-react';
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Legend } from 'recharts';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/store/auth.store';
 import { useUIStore } from '@/store/ui.store';
 import { useOnboarding } from '@/hooks/useOnboarding';
-import { MINI_BOARD, type AppStatus } from '@/lib/constants';
+import { MINI_BOARD, STATUS_LABEL, type AppStatus } from '@/lib/constants';
 import { formatDate } from '@/lib/format';
 import { CompanyLogo, StatusBadge, MatchBadge, ScoreRing, SectionCard } from '@/components/ui/Bits';
 import { CardSkeleton, Skeleton } from '@/components/ui/Skeleton';
 import EmptyState from '@/components/ui/EmptyState';
 
 interface DashboardData {
-  kpis: { totalJobs: number; totalApplications: number; totalResumes: number; responseRate: number };
+  kpis: { totalJobs: number; totalApplications: number; totalResumes: number; responseRate: number; interviewing: number; offers: number; rejections: number; bestAts: number | null; appliedThisWeek: number };
+  upcomingInterviews: Array<{ id: string; type: string; scheduledAt: string | null; meetingUrl: string | null; location: string | null; applicationId: string | null; title: string; company: string }>;
+  activity: Array<{ id: string; applicationId: string; at: string; from: AppStatus | null; to: AppStatus; title: string; company: string }>;
+  weekly: Array<{ week: string; applications: number; responses: number }>;
+  monthly: Array<{ month: string; applications: number; interviews: number; offers: number }>;
+  marketInsights: { jobs: number; topSkills: Array<{ skill: string; count: number; youHave: boolean }>; remoteShare: number; indiaEligibleRemote: number };
+  recommendations: Array<{ id: string; title: string; detail: string; link: string }>;
   applicationsByStatus: Array<{ status: AppStatus; _count: { status: number } }>;
   recentApplications: Array<{ id: string; status: AppStatus; appliedAt?: string; updatedAt: string; matchScore: number | null; job: { title: string; companyName: string; logo: string | null } }>;
   health: { score: number; components: Array<{ key: string; label: string; score: number; hint: string }> };
@@ -39,6 +46,9 @@ const QUOTES: Array<[string, string]> = [
   ['What you do today can improve all your tomorrows.', 'Ralph Marston'],
   ['Hard work beats talent when talent doesn’t work hard.', 'Tim Notke'],
 ];
+const AXIS = { fill: '#878BB0', fontSize: 11 };
+const GRID = 'rgba(136,153,187,.18)';
+const TIP = { background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12, color: 'var(--fg-primary)' };
 const dayOfYear = () => Math.floor((Date.now() - new Date(new Date().getFullYear(), 0, 0).getTime()) / 86_400_000);
 
 export default function DashboardPage() {
@@ -47,7 +57,7 @@ export default function DashboardPage() {
   const { state: onboarding } = useOnboarding();
   const quote = useMemo(() => QUOTES[dayOfYear() % QUOTES.length]!, []);
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['dashboard'],
     queryFn: async () => (await api.get('/analytics/dashboard')).data.data as DashboardData,
   });
@@ -58,6 +68,10 @@ export default function DashboardPage() {
     data?.applicationsByStatus.forEach(s => m.set(s.status, s._count.status));
     return m;
   }, [data]);
+
+  if (isError && !data) {
+    return <EmptyState art="applications" title="Couldn’t load your dashboard" description="Check your connection and try again." action={<button className="btn-primary" onClick={() => refetch()}>Try again</button>} />;
+  }
 
   if (isLoading || !data) {
     return (
@@ -100,6 +114,131 @@ export default function DashboardPage() {
         <Kpi icon={Send} label="Applications" value={data.kpis.totalApplications} color="var(--accent)" />
         <Kpi icon={FileText} label="Resumes" value={data.kpis.totalResumes} color="#34D399" />
         <Kpi icon={TrendingUp} label="Response rate" value={`${data.kpis.responseRate}%`} color="#A78BFA" />
+        <Kpi icon={CalendarClock} label="Interviewing now" value={data.kpis.interviewing} color="#FBBF24" />
+        <Kpi icon={Award} label="Offers vs rejections" value={`${data.kpis.offers} / ${data.kpis.rejections}`} color="#34D399" />
+        <Kpi icon={Send} label="Applied this week" value={data.kpis.appliedThisWeek} color="#60A5FA" />
+        <Kpi icon={FileText} label="Best ATS score" value={data.kpis.bestAts ?? '–'} color="#F472B6" />
+      </div>
+
+      <div className="grid lg:grid-cols-2 gap-6">
+        <SectionCard title="Recommended next steps">
+          {data.recommendations.length ? (
+            <ul className="space-y-2">
+              {data.recommendations.map(r => (
+                <li key={r.id}>
+                  <Link to={r.link} className="flex items-start gap-3 p-3 rounded-lg card-hover" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+                    <Lightbulb size={17} className="mt-0.5 shrink-0" style={{ color: 'var(--accent)' }} aria-hidden />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium" style={{ color: 'var(--fg-primary)' }}>{r.title}</p>
+                      <p className="text-xs mt-0.5" style={{ color: 'var(--fg-muted)' }}>{r.detail}</p>
+                    </div>
+                    <ChevronRight size={16} style={{ color: 'var(--fg-muted)' }} aria-hidden />
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          ) : <EmptyState art="applications" compact title="You’re on top of things" description="Nothing urgent right now. Fetch new jobs or practise for interviews." />}
+        </SectionCard>
+
+        <SectionCard title="Upcoming interviews" action={<Link to="/applications" className="text-sm" style={{ color: 'var(--accent)' }}>All applications</Link>}>
+          {data.upcomingInterviews.length ? (
+            <ul className="space-y-2">
+              {data.upcomingInterviews.map(i => (
+                <li key={i.id} className="flex items-center gap-3 p-3 rounded-lg" style={{ background: 'var(--bg-secondary)' }}>
+                  <CalendarClock size={18} style={{ color: 'var(--tone-amber)' }} aria-hidden />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate" style={{ color: 'var(--fg-primary)' }}>{i.title}{i.company ? ` · ${i.company}` : ''}</p>
+                    <p className="text-xs" style={{ color: 'var(--fg-muted)' }}>{i.scheduledAt ? formatDate(i.scheduledAt, 'EEE d MMM, HH:mm') : 'Time not set'} · {i.type.charAt(0) + i.type.slice(1).toLowerCase().replace(/_/g, ' ')}{i.location ? ` · ${i.location}` : ''}</p>
+                  </div>
+                  {i.meetingUrl && <a href={i.meetingUrl} target="_blank" rel="noopener noreferrer" className="btn-ghost p-1.5" aria-label={`Join ${i.title} interview`}><Video size={16} /></a>}
+                  {i.applicationId && <Link to={`/applications?open=${i.applicationId}`} className="btn-ghost p-1.5" aria-label={`Open application for ${i.title}`}><ChevronRight size={16} /></Link>}
+                </li>
+              ))}
+            </ul>
+          ) : <EmptyState art="applications" compact title="No interviews scheduled" description="Add an interview from an application to see it here and get a reminder." />}
+        </SectionCard>
+      </div>
+
+      <div className="grid lg:grid-cols-2 gap-6">
+        <SectionCard title="Weekly activity">
+          {data.weekly.some(w => w.applications) ? (
+            <div style={{ height: 200 }} role="img" aria-label={`Applications per week for the last 8 weeks: ${data.weekly.map(w => w.applications).join(', ')}`}>
+              <ResponsiveContainer>
+                <BarChart data={data.weekly} margin={{ left: -24, right: 4 }}>
+                  <CartesianGrid stroke={GRID} vertical={false} />
+                  <XAxis dataKey="week" tick={AXIS} tickFormatter={w => String(w).slice(5)} /><YAxis allowDecimals={false} tick={AXIS} />
+                  <Tooltip contentStyle={TIP} labelFormatter={w => `Week of ${w}`} cursor={{ fill: 'rgba(136,153,187,.1)' }} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  <Bar isAnimationActive={false} dataKey="applications" name="Applied" fill="#60A5FA" radius={[4, 4, 0, 0]} />
+                  <Bar isAnimationActive={false} dataKey="responses" name="Got a reply" fill="#34D399" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          ) : <EmptyState art="applications" compact title="No applications in the last 8 weeks" description="Your weekly applications and replies will be charted here." />}
+        </SectionCard>
+
+        <SectionCard title="Monthly progress" action={<Link to="/analytics" className="text-sm" style={{ color: 'var(--accent)' }}>Analytics</Link>}>
+          {data.monthly.some(m => m.applications) ? (
+            <div style={{ height: 200 }} role="img" aria-label={`Applications per month for the last 6 months: ${data.monthly.map(m => m.applications).join(', ')}`}>
+              <ResponsiveContainer>
+                <BarChart data={data.monthly} margin={{ left: -24, right: 4 }}>
+                  <CartesianGrid stroke={GRID} vertical={false} />
+                  <XAxis dataKey="month" tick={AXIS} tickFormatter={m => new Date(`${m}-01T00:00:00`).toLocaleString(undefined, { month: 'short' })} /><YAxis allowDecimals={false} tick={AXIS} />
+                  <Tooltip contentStyle={TIP} cursor={{ fill: 'rgba(136,153,187,.1)' }} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  <Bar isAnimationActive={false} dataKey="applications" name="Applied" fill="#60A5FA" radius={[4, 4, 0, 0]} />
+                  <Bar isAnimationActive={false} dataKey="interviews" name="Interviewing" fill="#FBBF24" radius={[4, 4, 0, 0]} />
+                  <Bar isAnimationActive={false} dataKey="offers" name="Offers" fill="#34D399" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          ) : <EmptyState art="applications" compact title="No monthly data yet" description="Applications, interviews and offers per month will appear here." />}
+        </SectionCard>
+      </div>
+
+      <div className="grid lg:grid-cols-2 gap-6">
+        <SectionCard title="Market insights" action={<span className="text-xs" style={{ color: 'var(--fg-muted)' }}>From your {data.marketInsights.jobs} jobs added in the last 30 days</span>}>
+          {data.marketInsights.topSkills.length ? (
+            <>
+              <p className="text-xs mb-3" style={{ color: 'var(--fg-secondary)' }}>
+                {data.marketInsights.remoteShare}% remote · {data.marketInsights.indiaEligibleRemote} remote jobs open to India
+              </p>
+              <ul className="space-y-1.5">
+                {data.marketInsights.topSkills.map(t => {
+                  const max = data.marketInsights.topSkills[0]!.count;
+                  return (
+                    <li key={t.skill} className="flex items-center gap-2 text-xs">
+                      <span className="w-28 truncate" style={{ color: 'var(--fg-primary)' }}>{t.skill}</span>
+                      <div className="flex-1 h-2 rounded-full overflow-hidden" style={{ background: 'var(--bg-hover)' }}>
+                        <div className="h-full rounded-full" style={{ width: `${(t.count / max) * 100}%`, background: t.youHave ? 'var(--tone-green)' : 'var(--tone-amber)' }} />
+                      </div>
+                      <span className="w-14 text-right font-mono" style={{ color: 'var(--fg-muted)' }}>{t.count} jobs</span>
+                      <span className={`badge ${t.youHave ? 'badge-green' : 'badge-amber'}`}>{t.youHave ? 'You have it' : 'Gap'}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </>
+          ) : <EmptyState art="search" compact title="No recent jobs to analyse" description="Fetch jobs on the Jobs page to see which skills employers ask for." action={<Link to="/jobs" className="btn-secondary text-sm py-2">Go to jobs</Link>} />}
+        </SectionCard>
+
+        <SectionCard title="Recent activity">
+          {data.activity.length ? (
+            <ul className="space-y-2">
+              {data.activity.map(a => (
+                <li key={a.id}>
+                  <Link to={`/applications?open=${a.applicationId}`} className="flex items-center gap-3 py-1.5 text-sm rounded-lg hover:bg-[var(--bg-hover)] -mx-2 px-2">
+                    <Activity size={15} style={{ color: 'var(--accent)' }} aria-hidden />
+                    <span className="flex-1 min-w-0 truncate" style={{ color: 'var(--fg-secondary)' }}>
+                      <span style={{ color: 'var(--fg-primary)' }}>{a.title}</span> at {a.company}: {a.from ? `${STATUS_LABEL[a.from]} → ` : ''}{STATUS_LABEL[a.to]}
+                    </span>
+                    <span className="text-xs shrink-0" style={{ color: 'var(--fg-muted)' }}>{formatDate(a.at, 'd MMM')}</span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          ) : <EmptyState art="applications" compact title="No activity yet" description="Status changes on your applications will show up here." />}
+        </SectionCard>
       </div>
 
       <div className="grid lg:grid-cols-2 gap-6">
@@ -125,10 +264,10 @@ export default function DashboardPage() {
               return (
                 <li key={g.id}>
                   <Link to={g.link} className="flex items-center gap-3 p-3 rounded-lg card-hover" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
-                    <Target size={18} style={{ color: pct >= 100 ? '#34D399' : 'var(--accent)' }} aria-hidden />
+                    <Target size={18} style={{ color: pct >= 100 ? 'var(--tone-green)' : 'var(--accent)' }} aria-hidden />
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium" style={{ color: 'var(--fg-primary)' }}>{g.title}</p>
-                      <div className="h-1.5 rounded-full mt-2 overflow-hidden" style={{ background: 'var(--bg-hover)' }}><div className="h-full rounded-full" style={{ width: `${pct}%`, background: pct >= 100 ? '#34D399' : 'var(--accent)' }} /></div>
+                      <div className="h-1.5 rounded-full mt-2 overflow-hidden" style={{ background: 'var(--bg-hover)' }}><div className="h-full rounded-full" style={{ width: `${pct}%`, background: pct >= 100 ? 'var(--tone-green)' : 'var(--accent)' }} /></div>
                     </div>
                     <span className="text-xs font-mono" style={{ color: 'var(--fg-muted)' }}>{g.progress}/{g.target}</span>
                     <ChevronRight size={16} style={{ color: 'var(--fg-muted)' }} aria-hidden />

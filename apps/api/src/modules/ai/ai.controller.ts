@@ -7,8 +7,15 @@ import { env } from '../../config/env';
 import { aiService } from '../../services/ai.service';
 import { agentService, getPending, toDisplayMessages, type AgentResult, type Emit } from '../../services/agent.service';
 import { AppError } from '../../middleware/errorHandler';
-import { resumeText } from '../../lib/match';
+import { quickMatch, resumeText, userSkillSet } from '../../lib/match';
+import { topSkills } from '../../lib/atsScore';
+
+const normSkill = (s: string) => s.trim().toLowerCase().replace(/\.js$/, '').replace(/[^a-z0-9+#]/g, '');
 import { matchJobForUser } from '../../lib/jobMatch';
+import { logger } from '../../config/logger';
+import { captureError } from '../../lib/sentry';
+import { providerHealth, testConnection } from '../../lib/llm';
+import { getUserAIPrefs } from '../../lib/aiPrefs';
 
 const uid = (req: AuthRequest) => req.user!.id;
 const param = (req: AuthRequest, k: string) => req.params[k] as string;
@@ -81,8 +88,15 @@ export const aiController = {
       res.end();
     } catch (e) {
       if (!started) return next(e);
-      const msg = e instanceof AppError ? e.message : 'Something went wrong while generating the response.';
-      send('error', { message: msg });
+      // Headers are already sent, so the error handler can't run: log here and tell the client why
+      const known = e instanceof AppError;
+      const requestId = (req as AuthRequest & { id?: string }).id;
+      if (known) logger.warn({ requestId, userId: uid(req), code: e.code, status: e.statusCode }, `AI chat failed: ${e.message}`);
+      else { logger.error({ err: e, requestId, userId: uid(req) }, 'AI chat failed with an unexpected error'); captureError(e, { path: 'ai/chat/stream' }); }
+      send('error', {
+        code: known ? e.code ?? 'ERROR' : 'INTERNAL_ERROR',
+        message: known ? e.message : `Something went wrong on the server while generating the response${requestId ? ` (reference ${requestId})` : ''}.`,
+      });
       res.end();
     }
   },
@@ -145,6 +159,65 @@ export const aiController = {
       const { jobId, resumeId } = req.body as { jobId: string; resumeId?: string };
       const match = await matchJobForUser(uid(req), jobId, resumeId);
       res.json({ success: true, data: match });
+    } catch (e) { next(e); }
+  },
+
+  /**
+   * Career assistant tasks: jd_analysis, skill_gap, roadmap and application_help. Job-based tasks take
+   * a saved jobId or a pasted jobDescription. Results are returned for the user to review; nothing is
+   * sent or submitted anywhere. (Professional emails use POST /recruiter-messages/draft.)
+   */
+  async careerTask(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const task = param(req, 'task');
+      const b = (req.body ?? {}) as { jobId?: unknown; jobDescription?: unknown; resumeId?: unknown; target?: unknown; weeks?: unknown };
+      const userId = uid(req);
+      if (!['jd_analysis', 'skill_gap', 'roadmap', 'application_help'].includes(task)) throw new AppError('Unknown career task', 404);
+
+      if (task === 'roadmap') {
+        const target = typeof b.target === 'string' ? b.target.trim() : '';
+        if (target.length < 2) throw new AppError('Say what you are aiming for, e.g. "Senior React developer"', 400, 'VALIDATION_ERROR');
+        const weeks = Math.min(Math.max(parseInt(String(b.weeks ?? 8)) || 8, 2), 26);
+        const [skills, profile, jobs] = await Promise.all([
+          userSkillSet(userId),
+          prisma.profile.findUnique({ where: { userId }, select: { yearsOfExp: true } }),
+          prisma.job.findMany({ where: { userId, isActive: true, duplicateOfId: null }, select: { skills: true }, take: 200, orderBy: { createdAt: 'desc' } }),
+        ]);
+        const known = [...skills.values()];
+        const gaps = topSkills(jobs, 15).map(t => t.skill).filter(s => !skills.has(normSkill(s)));
+        const y = profile?.yearsOfExp || 2;
+        const level = y < 1.5 ? 'ENTRY' : y < 5 ? 'MID' : y < 9 ? 'SENIOR' : 'LEAD';
+        const data = await aiService.careerRoadmap({ target: target.slice(0, 200), weeks, level, knownSkills: known, gaps }, userId);
+        res.json({ success: true, data: { ...data, weeks, level, gapsConsidered: gaps } });
+        return;
+      }
+
+      let jd = typeof b.jobDescription === 'string' ? b.jobDescription.trim() : '';
+      let job: { id: string; title: string; companyName: string; skills: string[] } | null = null;
+      if (typeof b.jobId === 'string' && b.jobId) {
+        const j = await prisma.job.findFirst({ where: { id: b.jobId, userId }, select: { id: true, title: true, companyName: true, skills: true, description: true, requirements: true } });
+        if (!j) throw new AppError('Job not found', 404);
+        jd = [j.description, j.requirements].filter(Boolean).join('\n\n') || j.skills.join(', ');
+        job = j;
+      }
+      if (jd.length < 40) throw new AppError('Pick a saved job or paste a job description of at least a few lines', 400, 'VALIDATION_ERROR');
+
+      if (task === 'jd_analysis') {
+        res.json({ success: true, data: await aiService.analyzeJobDescription(jd, userId) });
+        return;
+      }
+      const resume = await pickResume(userId, typeof b.resumeId === 'string' ? b.resumeId : undefined);
+      const text = resumeText(resume);
+      if (!text.trim()) throw new AppError('This resume has no readable text. Re-upload a text-based PDF or a DOCX.', 422);
+      if (task === 'skill_gap') {
+        const ai = await aiService.skillGap(text, jd, userId);
+        // The rule-based skills check runs alongside, so the AI's view can be compared with the job's listed skills
+        const skillsCheck = job?.skills.length ? quickMatch(job.skills, await userSkillSet(userId)) : null;
+        res.json({ success: true, data: { ...ai, skillsCheck } });
+        return;
+      }
+      const help = await aiService.applicationHelp(text, jd, job?.title ?? 'this role', job?.companyName ?? 'the company', userId);
+      res.json({ success: true, data: help });
     } catch (e) { next(e); }
   },
 
@@ -216,6 +289,28 @@ export const aiController = {
     } catch (e) { next(e); }
   },
 
+  /** Provider status without calling it: key present and well-formed, model, fallback, last outcome. */
+  async health(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const prefs = await getUserAIPrefs(uid(req));
+      res.json({ success: true, data: { ...providerHealth(), userModel: prefs.model } });
+    } catch (e) { next(e); }
+  },
+
+  /** One tiny real request with the user's chosen model, so Settings can prove the setup works. */
+  async testConnection(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const prefs = await getUserAIPrefs(uid(req));
+      if (!env.AI_KEY) {
+        res.json({ success: true, data: { ok: false, code: 'AI_NOT_CONFIGURED', message: providerHealth().keyProblem } });
+        return;
+      }
+      const result = await testConnection(prefs.model);
+      if (!result.ok) logger.warn({ userId: uid(req), code: result.code }, `AI connection test failed: ${result.message}`);
+      res.json({ success: true, data: result });
+    } catch (e) { next(e); }
+  },
+
   /** Monthly usage vs. budget, used by the sidebar meter and the analytics page. */
   async getUsage(req: AuthRequest, res: Response, next: NextFunction) {
     try {
@@ -237,6 +332,7 @@ export const aiController = {
           configured: Boolean(env.AI_KEY),
           provider: env.AI_PROVIDER,
           keyVar: env.AI_PROVIDER === 'nvidia' ? 'NVIDIA_API_KEY' : 'ANTHROPIC_API_KEY',
+          keyProblem: env.AI_KEY ? null : providerHealth().keyProblem,
         },
       });
     } catch (e) { next(e); }

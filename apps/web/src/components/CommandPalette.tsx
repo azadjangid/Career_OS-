@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Briefcase, FileText, Send, Settings, Search, Brain, BarChart3, LayoutDashboard, User, Plus, Moon, Keyboard } from 'lucide-react';
+import { Briefcase, FileText, Send, Settings, Search, Brain, BarChart3, LayoutDashboard, User, Plus, Moon, Keyboard, MessagesSquare, GraduationCap } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useUIStore } from '@/store/ui.store';
 
@@ -66,6 +66,8 @@ export default function CommandPalette() {
     { id: 'p-res', label: 'Resumes', group: 'Pages', icon: FileText, run: go('/resumes') },
     { id: 'p-ai', label: 'AI Assistant', group: 'Pages', icon: Brain, run: go('/ai') },
     { id: 'p-an', label: 'Analytics', group: 'Pages', icon: BarChart3, run: go('/analytics') },
+    { id: 'p-prep', label: 'Interview Prep', hint: 'Mock interviews', group: 'Pages', icon: MessagesSquare, run: go('/interview-prep') },
+    { id: 'p-learn', label: 'Learning', hint: 'Skill goals and roadmaps', group: 'Pages', icon: GraduationCap, run: go('/learning') },
     { id: 'p-prof', label: 'Profile', group: 'Pages', icon: User, run: go('/profile') },
     { id: 's-set', label: 'Settings', hint: 'Account, privacy, API key', group: 'Settings', icon: Settings, run: go('/settings') },
     { id: 's-theme', label: theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme', group: 'Settings', icon: Moon, run: () => { setTheme(theme === 'dark' ? 'light' : 'dark'); setPaletteOpen(false); } },

@@ -4,7 +4,11 @@ import type { Resume } from '@/lib/types';
 import { Modal } from '@/components/ui/Modal';
 import { Skeleton } from '@/components/ui/Skeleton';
 import EmptyState from '@/components/ui/EmptyState';
-import { formatDate } from '@/lib/format';
+import { apiError, formatDate } from '@/lib/format';
+import { useState } from 'react';
+import { Download, Loader2 } from 'lucide-react';
+import { downloadFromApi } from '@/lib/api';
+import { toast } from '@/store/toast.store';
 
 interface Preview {
   name: string;
@@ -24,9 +28,29 @@ export default function PreviewModal({ resume, onClose }: { resume: Resume | nul
     queryFn: async () => (await api.get(`/resumes/${resume!.id}/preview`)).data.data as Preview,
   });
   const s = data?.structured;
+  const [downloading, setDownloading] = useState(false);
+
+  const download = async () => {
+    if (!resume) return;
+    setDownloading(true);
+    try {
+      await downloadFromApi(`/resumes/${resume.id}/file`, resume.fileName ?? `${resume.name}.pdf`);
+    } catch (e) {
+      toast.error(apiError(e, 'Could not download the original file'));
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   return (
     <Modal open={!!resume} onClose={onClose} title={resume ? `Preview · ${resume.name}` : 'Preview'} wide>
+      {resume?.fileName && (
+        <div className="flex justify-end mb-3">
+          <button className="btn-secondary text-sm" onClick={download} disabled={downloading}>
+            {downloading ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />} Download original
+          </button>
+        </div>
+      )}
       {isLoading ? <div className="space-y-3"><Skeleton className="h-8 w-1/2 rounded" /><Skeleton className="h-40 rounded-xl" /></div>
         : !data?.text && !s ? <EmptyState art="resumes" compact title="No readable text" description="We couldn’t extract text from this file. Try a text-based PDF or a DOCX." />
         : (

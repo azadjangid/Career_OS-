@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { ZodError } from 'zod';
 import { Prisma } from '@prisma/client';
 import { logger } from '../config/logger';
+import { captureError } from '../lib/sentry';
 
 export class AppError extends Error {
   constructor(
@@ -52,8 +53,32 @@ export const errorHandler = (
     }
   }
 
+  // Upload errors (file too large, too many files)
+  if (err.name === 'MulterError') {
+    const code = (err as Error & { code?: string }).code;
+    res.status(code === 'LIMIT_FILE_SIZE' ? 413 : 400).json({
+      success: false,
+      error: { code: code ?? 'UPLOAD_ERROR', message: code === 'LIMIT_FILE_SIZE' ? 'File is too large (max 10 MB)' : err.message },
+    });
+    return;
+  }
+
+  // Malformed JSON body
+  if ((err as Error & { type?: string }).type === 'entity.parse.failed') {
+    res.status(400).json({ success: false, error: { code: 'BAD_JSON', message: 'Request body is not valid JSON' } });
+    return;
+  }
+
+  // CORS rejections
+  if (err.message?.startsWith('CORS blocked')) {
+    res.status(403).json({ success: false, error: { code: 'CORS', message: 'Origin not allowed' } });
+    return;
+  }
+
   // App errors
   if (err instanceof AppError) {
+    // Server-side failures (5xx) are worth a log line even when we chose the message
+    if (err.statusCode >= 500) logger.warn({ code: err.code, status: err.statusCode, requestId: (req as Request & { id?: string }).id }, `${req.method} ${req.path}: ${err.message}`);
     res.status(err.statusCode).json({
       success: false,
       error: { code: err.code ?? 'ERROR', message: err.message },
@@ -62,10 +87,12 @@ export const errorHandler = (
   }
 
   // Unknown errors — log full details but never expose to client
-  logger.error(err, `Unhandled error: ${req.method} ${req.path}`);
+  const requestId = (req as Request & { id?: string }).id;
+  logger.error({ err, requestId }, `Unhandled error: ${req.method} ${req.path}`);
+  captureError(err, { method: req.method, path: req.route?.path ?? req.path, requestId });
   res.status(500).json({
     success: false,
-    error: { code: 'INTERNAL_ERROR', message: 'An unexpected error occurred' },
+    error: { code: 'INTERNAL_ERROR', message: `An unexpected error occurred${requestId ? ` (reference ${requestId})` : ''}`, requestId },
   });
 };
 

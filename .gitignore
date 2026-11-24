@@ -1,58 +1,29 @@
-# ── ENVIRONMENT ──────────────────────────────
-.env
-.env.local
-.env.*.local
-!.env.example
-
-# ── DEPENDENCIES ─────────────────────────────
+# Dependencies and build output
 node_modules/
-.pnp
-.pnp.js
-
-# ── BUILD OUTPUT ─────────────────────────────
 dist/
-build/
-out/
-.output/
-
-# ── DATABASE ─────────────────────────────────
-*.db
-*.sqlite
-prisma/migrations/**/migration.lock
-
-# ── FILE UPLOADS ─────────────────────────────
-uploads/
-!uploads/.gitkeep
-
-# ── LOGS ─────────────────────────────────────
-logs/
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# ── CACHE ────────────────────────────────────
-.cache/
-.parcel-cache/
-.turbo/
-.vite/
-
-# ── IDE ──────────────────────────────────────
-.vscode/
-!.vscode/extensions.json
-!.vscode/settings.json
-.idea/
-*.swp
-*.swo
-.DS_Store
-Thumbs.db
-
-# ── TESTING ──────────────────────────────────
-coverage/
-.nyc_output/
-
-# ── TYPESCRIPT ───────────────────────────────
 *.tsbuildinfo
 
-# ── DOCKER ───────────────────────────────────
-.docker/volumes/
+# Secrets: never commit real environment files
+.env
+.env.*
+!.env.example
+
+# Uploaded resumes and local data
+uploads/
+apps/api/uploads/
+.e2e-uploads/
+apps/api/.e2e-uploads/
+backups/
+
+# Test output
+coverage/
+playwright-report/
+test-results/
+
+# Logs and OS/editor files
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json

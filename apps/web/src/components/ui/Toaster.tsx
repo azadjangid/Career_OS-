@@ -3,7 +3,7 @@ import { CheckCircle2, AlertCircle, Info, X } from 'lucide-react';
 import { useToastStore, type ToastKind } from '@/store/toast.store';
 
 const ICON = { success: CheckCircle2, error: AlertCircle, info: Info } as const;
-const COLOR: Record<ToastKind, string> = { success: '#34D399', error: '#F87171', info: '#60A5FA' };
+const COLOR: Record<ToastKind, string> = { success: 'var(--tone-green)', error: 'var(--tone-red)', info: 'var(--tone-blue)' };
 
 export default function Toaster() {
   const { toasts, dismiss } = useToastStore();
@@ -25,7 +25,7 @@ export default function Toaster() {
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, x: 40 }}
               className="pointer-events-auto flex items-start gap-3 rounded-xl px-4 py-3 shadow-lg"
-              style={{ background: 'var(--bg-card)', border: `1px solid ${COLOR[t.kind]}55` }}
+              style={{ background: 'var(--bg-card)', border: `1px solid color-mix(in srgb, ${COLOR[t.kind]} 33%, transparent)` }}
               role={t.kind === 'error' ? 'alert' : 'status'}
             >
               <Icon size={18} style={{ color: COLOR[t.kind] }} className="mt-0.5 shrink-0" />

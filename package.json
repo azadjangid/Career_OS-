@@ -4,15 +4,12 @@
   "private": true,
   "description": "CareerOS — AI Career Operating System",
   "workspaces": [
-    "apps/*",
-    "packages/*",
-    "workers"
+    "apps/*"
   ],
   "scripts": {
-    "dev": "concurrently \"npm run dev:api\" \"npm run dev:web\" \"npm run dev:workers\"",
+    "dev": "concurrently -n api,web,worker -c blue,magenta,yellow \"npm run dev:api\" \"npm run dev:web\" \"npm run dev:worker\"",
     "dev:api": "npm run dev --workspace=apps/api",
     "dev:web": "npm run dev --workspace=apps/web",
-    "dev:workers": "npm run dev --workspace=workers",
     "build": "npm run build --workspaces --if-present",
     "db:generate": "prisma generate --schema=./prisma/schema.prisma",
     "db:migrate": "prisma migrate dev --schema=./prisma/schema.prisma",
@@ -20,17 +17,30 @@
     "db:seed": "npx tsx prisma/seed.ts",
     "db:studio": "prisma studio --schema=./prisma/schema.prisma",
     "db:reset": "prisma migrate reset --schema=./prisma/schema.prisma",
-    "lint": "npm run lint --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present"
+    "lint": "eslint .",
+    "test": "npm run test --workspaces --if-present",
+    "dev:worker": "npm run dev:worker --workspace=apps/api",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test:e2e": "playwright test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@playwright/test": "^1.63.0",
     "concurrently": "^8.2.2",
-    "prisma": "^5.9.1",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "globals": "^15.15.0",
+    "prettier": "^3.10.1",
     "tsx": "^4.7.0",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "typescript-eslint": "^8.74.0"
   },
   "dependencies": {
-    "@prisma/client": "^5.9.1"
+    "@prisma/client": "^5.9.1",
+    "bcryptjs": "^2.4.3",
+    "prisma": "^5.9.1"
   },
   "engines": {
     "node": ">=20.0.0",
